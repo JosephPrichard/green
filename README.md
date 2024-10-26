@@ -1,2 +1,4 @@
-# kaleidoscope
-A Rust implementation of LLVM's kaleidoscope tutorial
+# Kaleidoscope
+A Rust implementation of LLVM's kaleidoscope tutorial.
+
+Work in progress!
