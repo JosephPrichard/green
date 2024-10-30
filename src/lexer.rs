@@ -15,6 +15,7 @@ pub enum Token {
     Gt,
     Lt,
     Eq,
+    Comma,
     Iden(String),
     Number(f64)
 }
@@ -106,6 +107,7 @@ impl<R: BufRead> Lexer<R> {
             '<' => Token::Lt,
             '>' => Token::Gt,
             '=' => Token::Eq,
+            ',' => Token::Comma,
             // Token::Geq,
             // Token::Leq,
             _ => panic!("Unknown token has been reached {}", self.last_char),
