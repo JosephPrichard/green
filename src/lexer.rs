@@ -1,6 +1,7 @@
+use std::fmt::{Debug, Formatter};
 use std::io::{BufRead, BufReader, Read};
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub enum Token {
     Def,
     Extern,
@@ -12,12 +13,49 @@ pub enum Token {
     Slash,
     Leq,
     Geq,
-    Gt,
     Lt,
+    Gt,
     Eq,
     Comma,
     Iden(String),
-    Number(f64)
+    Number(f64),
+    Eof
+}
+
+impl Debug for Token {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+       match self {
+           Token::Def => write!(f, "{}", "def"),
+           Token::Extern => write!(f, "{}", "extern"),
+           Token::LParen => write!(f, "{}", "("),
+           Token::RParen => write!(f, "{}", ")"),
+           Token::Plus => write!(f, "{}", "+"),
+           Token::Minus => write!(f, "{}", "-"),
+           Token::Times => write!(f, "{}", "*"),
+           Token::Slash => write!(f, "{}", "/"),
+           Token::Leq => write!(f, "{}", "<="),
+           Token::Geq => write!(f, "{}", ">="),
+           Token::Lt => write!(f, "{}", "<"),
+           Token::Gt => write!(f, "{}", ">"),
+           Token::Eq => write!(f, "{}", "="),
+           Token::Comma => write!(f, "{}", ","),
+           Token::Iden(_) => write!(f, "{}", "<iden>"),
+           Token::Number(num) => write!(f, "{}", num),
+           Token::Eof => write!(f, "{}", "<eof>")
+       }
+    }
+}
+
+impl Token {
+    pub fn is_sentinel(&self) -> bool {
+        match self {
+            Token::Def |
+            Token::Extern |
+            Token::Comma |
+            Token::Eof => true,
+            _ => false
+        }
+    }
 }
 
 pub struct Lexer<R: BufRead> {
@@ -81,10 +119,10 @@ impl<R: BufRead> Lexer<R> {
         Token::Number(num)
     }
 
-    pub fn skip_comment(&mut self) -> Option<Token> {
+    pub fn skip_comment(&mut self) -> Token {
         loop {
             self.last_char = match self.read_char() {
-                None => return None, // eof in comment means there cannot be anymore tokens
+                None => return Token::Eof, // eof in comment means there cannot be anymore tokens
                 Some(ch) => ch
             };
             if self.last_char == '\n' || self.last_char == '\r' {
@@ -114,20 +152,18 @@ impl<R: BufRead> Lexer<R> {
         }
     }
 
-    pub fn read_token(&mut self) -> Option<Token> {
+    pub fn read_token(&mut self) -> Token {
         while self.last_char.is_whitespace() { // skip all whitespace until, last_char will be the a non-whitespace at the end of the loop
             self.last_char = match self.read_char() {
-                None => return None,
+                None => return Token::Eof,
                 Some(ch) => ch
             };
         }
 
         if self.last_char.is_alphabetic() {
-            let token = self.read_iden();
-            Some(token)
+            self.read_iden()
         } else if self.last_char.is_digit(10) || self.last_char == '.' {
-            let token = self.read_number();
-            Some(token)
+            self.read_number()
         } else if self.last_char == '#' {
             // a comment, so skip until end of line
             self.skip_comment()
@@ -135,10 +171,10 @@ impl<R: BufRead> Lexer<R> {
             // otherwise, handle any misc characters
             let token = self.read_misc_token();
             self.last_char = match self.read_char() {
-                None => return None, // eof in comment means there cannot be anymore tokens
+                None => return Token::Eof, // eof in comment means there cannot be anymore tokens
                 Some(ch) => ch, // consume the token since we just used it
             };
-            Some(token)
+            token
         }
     }
 
@@ -146,8 +182,8 @@ impl<R: BufRead> Lexer<R> {
         let mut tokens = vec![];
         loop {
             match self.read_token() {
-                None => return tokens,
-                Some(token) => tokens.push(token),
+                Token::Eof => return tokens,
+                token => tokens.push(token),
             }
         }
     }
@@ -177,10 +213,13 @@ mod test {
         let tokens = Lexer::new(reader).read_tokens();
         println!("{:?}", tokens);
 
-        let expected_tokens = [Def, Iden(String::from("fib")), LParen, Iden(String::from("x")), RParen, Iden(String::from("if")),
-            Iden(String::from("x")), Lt, Number(3.0), Iden(String::from("then")), Number(1.0), Iden(String::from("else")),
-            Iden(String::from("fib")), LParen, Iden(String::from("x")), Minus, Number(1.0), RParen, Plus, Iden(String::from("fib")),
-            LParen, Iden(String::from("x")), Minus, Number(2.0), RParen, Iden(String::from("fib")), LParen, Number(40.0), RParen];
+        let expected_tokens = [
+            Extern, Iden("atan".to_string()), LParen, RParen,
+            Def, Iden("fib".to_string()), LParen, Iden("x".to_string()), RParen, Iden("if".to_string()),
+            Iden("x".to_string()), Lt, Number(3.0), Iden("then".to_string()), Number(1.0), Iden("else".to_string()),
+            Iden("fib".to_string()), LParen, Iden("x".to_string()), Minus, Number(1.0), RParen, Plus, Iden("fib".to_string()),
+            LParen, Iden("x".to_string()), Minus, Number(2.0), RParen, Iden("fib".to_string()), LParen, Number(40.0), RParen
+        ];
         assert_eq!(tokens, expected_tokens);
     }
 }
