@@ -27,34 +27,22 @@ impl Debug for Token {
        match self {
            Token::Def => write!(f, "{}", "def"),
            Token::Extern => write!(f, "{}", "extern"),
-           Token::LParen => write!(f, "{}", "("),
-           Token::RParen => write!(f, "{}", ")"),
-           Token::Plus => write!(f, "{}", "+"),
-           Token::Minus => write!(f, "{}", "-"),
-           Token::Times => write!(f, "{}", "*"),
-           Token::Slash => write!(f, "{}", "/"),
-           Token::Leq => write!(f, "{}", "<="),
-           Token::Geq => write!(f, "{}", ">="),
-           Token::Lt => write!(f, "{}", "<"),
-           Token::Gt => write!(f, "{}", ">"),
-           Token::Eq => write!(f, "{}", "="),
-           Token::Comma => write!(f, "{}", ","),
+           Token::LParen => write!(f, "{}", "'('"),
+           Token::RParen => write!(f, "{}", "')'"),
+           Token::Plus => write!(f, "{}", "'+'"),
+           Token::Minus => write!(f, "{}", "'-'"),
+           Token::Times => write!(f, "{}", "'*'"),
+           Token::Slash => write!(f, "{}", "'/'"),
+           Token::Leq => write!(f, "{}", "'<='"),
+           Token::Geq => write!(f, "{}", "'>='"),
+           Token::Lt => write!(f, "{}", "'<'"),
+           Token::Gt => write!(f, "{}", "'>'"),
+           Token::Eq => write!(f, "{}", "'='"),
+           Token::Comma => write!(f, "{}", "','"),
            Token::Iden(_) => write!(f, "{}", "<iden>"),
            Token::Number(num) => write!(f, "{}", num),
            Token::Eof => write!(f, "{}", "<eof>")
        }
-    }
-}
-
-impl Token {
-    pub fn is_sentinel(&self) -> bool {
-        match self {
-            Token::Def |
-            Token::Extern |
-            Token::Comma |
-            Token::Eof => true,
-            _ => false
-        }
     }
 }
 

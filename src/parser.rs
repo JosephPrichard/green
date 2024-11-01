@@ -63,7 +63,17 @@ impl ExprAst {
 #[derive(Debug, PartialEq)]
 pub struct PrototypeAst {
     name: String,
-    args: Vec<String>,
+    args: Box<[String]>,
+}
+
+impl PrototypeAst {
+    pub fn of(name: &str, args: &[&str]) -> PrototypeAst {
+        let mut vargs = Vec::with_capacity(args.len());
+        for arg in args {
+            vargs.push(String::from(*arg))
+        }
+        PrototypeAst { name: name.to_string(), args: vargs.into_boxed_slice() }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -117,8 +127,7 @@ impl<R: BufRead> Parser<R> {
                 self.consume_token(); // consume the lparen
                 let mut args = vec![];
                 loop {
-                    let mut parens = 0;
-                    let arg_expr = self.parse_expr(&mut parens);
+                    let arg_expr = self.parse_expr(0);
                     args.push(arg_expr);
 
                     let token = self.read_token();
@@ -147,44 +156,58 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    pub fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, parens: &mut i32) -> ExprAst {
+    pub fn parse_primary(&mut self, depth: u32) -> ExprAst {
         let token = self.read_token();
-        let expr = match token {
+        match token {
+            Token::LParen => self.parse_expr(depth + 1),
             Token::Number(num) => ExprAst::Number(num),
             Token::Iden(iden) => self.parse_iden_expr(iden),
-            token => panic!("Expected an variable, call, or numeric token, got {:?}", token),
-        };
+            token => panic!("Expected an iden, numeric, or lparen token at the start of an expression, got {:?}", token),
+        }
+    }
 
-        if self.peek_token().is_sentinel() {
-            // if we get a signal that we have the last token, just return the expr as the new rhs and be done
-            BinaryAst::new(curr_op, lhs, expr)
-        } else {
-            let next_op = self.parse_operator();
+    pub fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, depth: u32) -> ExprAst {
+        let expr = self.parse_primary(depth);
 
-            if next_op.precedence() > curr_op.precedence() {
-                let rhs = self.parse_binop_rhs(expr, next_op, parens);
-                BinaryAst::new(curr_op, lhs, rhs)
-            } else {
-                let lhs = BinaryAst::new(curr_op, lhs, expr);
-                self.parse_binop_rhs(lhs, next_op, parens)
+        let token = self.peek_token();
+        match token {
+            Token::Def | Token::Extern | Token::Comma | Token::Eof => {
+                if depth == 0 {
+                    BinaryAst::new(curr_op, lhs, expr)
+                } else {
+                    panic!("Reached the end of an expression with unclosed parenthesis")
+                }
+            },
+            Token::RParen => {
+                if depth > 0 { // only consume if we're inside a nested subexpression
+                    self.consume_token()
+                }
+                BinaryAst::new(curr_op, lhs, expr)
+            },
+            _ => {
+                let next_op = self.parse_operator();
+
+                if next_op.precedence() > curr_op.precedence() {
+                    let rhs = self.parse_binop_rhs(expr, next_op, depth);
+                    BinaryAst::new(curr_op, lhs, rhs)
+                } else {
+                    let lhs = BinaryAst::new(curr_op, lhs, expr);
+                    self.parse_binop_rhs(lhs, next_op, depth)
+                }
             }
         }
     }
 
-    pub fn parse_expr(&mut self, parens: &mut i32) -> ExprAst {
-        let token = self.read_token();
-        let expr = match token {
-            Token::Number(num) => ExprAst::Number(num),
-            Token::Iden(iden) => self.parse_iden_expr(iden),
-            token => panic!("Expected an iden, numeric, or lparen token at the start of an expression got {:?}", token),
-        };
+    pub fn parse_expr(&mut self, depth: u32) -> ExprAst {
+        let expr = self.parse_primary(depth);
 
-        // check try to parse the rhs if it exists
-        if self.peek_token().is_sentinel() {
-            expr
-        } else {
-            let op = self.parse_operator();
-            self.parse_binop_rhs(expr, op, parens)
+        let token = self.peek_token();
+        match token {
+            Token::Def | Token::Extern | Token::Comma | Token::RParen | Token::Eof => expr,
+            _ => {
+                let op = self.parse_operator();
+                self.parse_binop_rhs(expr, op, depth)
+            }
         }
     }
 
@@ -197,12 +220,11 @@ impl<R: BufRead> Parser<R> {
                 Token::Extern => DeclAst::Extern(self.parse_prototype()),
                 Token::Def => {
                     let prototype = self.parse_prototype();
-                    let mut parens = 0;
-                    let body = self.parse_expr(&mut parens);
+                    let body = self.parse_expr(0);
                     DeclAst::Function(FunctionAst { prototype, body, })
                 },
                 Token::Eof => return nodes,
-                _ => panic!("Expected a toplevel node declaration to be either an extern or a def"),
+                token => panic!("Expected a declaration to be either an extern or a def, got {:?}", token),
             };
             nodes.push(node);
         }
@@ -229,7 +251,7 @@ impl<R: BufRead> Parser<R> {
             };
             args.push(arg);
         }
-        PrototypeAst { name, args }
+        PrototypeAst { name, args: args.into_boxed_slice() }
     }
 }
 
@@ -239,7 +261,7 @@ mod test {
     use crate::parser::ExprAst::{Call, Variable};
     use crate::parser::{BinaryAst, ExprAst, FunctionAst, Parser, PrototypeAst};
     use crate::parser::DeclAst::{Extern, Function};
-    use crate::parser::Operator::{Add, Multiply, Subtract};
+    use crate::parser::Operator::{Add, Divide, Multiply, Subtract};
 
     #[test]
     pub fn test_nested_functions() {
@@ -258,24 +280,24 @@ mod test {
         println!("{:?}", tokens);
 
         let expected_ast = [
-            Extern(PrototypeAst { name: "println".to_string(), args: vec![] }),
+            Extern(PrototypeAst::of("println", &[])),
             Function(FunctionAst {
-                prototype: PrototypeAst { name: "pickLeft".to_string(), args: vec!["x".to_string(), "y".to_string()] },
-                body: Variable("x".to_string())
+                prototype: PrototypeAst::of("pickLeft", &["x", "y"]),
+                body: ExprAst::variable("x")
             }),
             Function(FunctionAst {
-                prototype: PrototypeAst { name: "pickMiddle".to_string(), args: vec!["x".to_string(), "y".to_string(), "z".to_string()] },
+                prototype: PrototypeAst::of("pickMiddle", &["x", "y", "z"]),
                 body: Call {
                     callee: "pickLeft".to_string(),
                     args: vec![
                         Call {
                             callee: "pickLeft".to_string(),
                             args: vec![
-                                Variable("y".to_string()),
-                                Variable("z".to_string())
+                                ExprAst::variable("y"),
+                                ExprAst::variable("z")
                             ]
                         },
-                        Variable("z".to_string())
+                        ExprAst::variable("z")
                     ]
                 }
             })
@@ -301,7 +323,7 @@ mod test {
 
         let expected_ast = [
             Function(FunctionAst {
-                prototype: PrototypeAst { name: "calculate1".to_string(), args: vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()] },
+                prototype: PrototypeAst::of("calculate1", &["a", "b", "c", "d"]),
                 body: BinaryAst::new(
                     Add,
                     BinaryAst::new(
@@ -313,7 +335,7 @@ mod test {
                 )
             }),
             Function(FunctionAst {
-                prototype: PrototypeAst { name: "calculate2".to_string(), args: vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()] },
+                prototype: PrototypeAst::of("calculate2", &["a", "b", "c", "d"]),
                 body: BinaryAst::new(
                     Add,
                     BinaryAst::new(Add, ExprAst::variable("a"), ExprAst::variable("b")),
@@ -321,7 +343,7 @@ mod test {
                 )
             }),
             Function(FunctionAst {
-                prototype: PrototypeAst { name: "calculate3".to_string(), args: vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()] },
+                prototype: PrototypeAst::of("calculate3", &["a", "b", "c", "d"]),
                 body: BinaryAst::new(
                     Add,
                     ExprAst::variable("a"),
@@ -333,7 +355,7 @@ mod test {
                 )
             }),
             Function(FunctionAst {
-                prototype: PrototypeAst { name: "calculate4".to_string(), args: vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()] },
+                prototype: PrototypeAst::of("calculate4", &["a", "b", "c", "d"]),
                 body: BinaryAst::new(
                     Subtract,
                     BinaryAst::new(Multiply, ExprAst::variable("a"), ExprAst::variable("b")),
@@ -347,30 +369,66 @@ mod test {
     #[test]
     pub fn test_binop_subexprs() {
         let input = r"
-            def calculate1(a b c d) (a - b) * (c + d) + a + b
+            def calculate1(a b) (a - b)
 
-            def calculate2(a b c d) (a + (b * (c / d)))
+            def calculate2(a b c d) (a - b) * (c + d) + a + b
+
+            def calculate3(a b c d) (a + (b * (c - d + a)))
         ";
 
         let reader = BufReader::new(Cursor::new(input));
         let tokens = Parser::new(Lexer::new(reader)).parse();
         println!("{:?}", tokens);
 
-        let expected_ast = [];
+        let expected_ast = [
+            Function(FunctionAst {
+                prototype: PrototypeAst::of("calculate1", &["a", "b"]),
+                body: BinaryAst::new(Subtract, Variable("a".to_string()), Variable("b".to_string()))
+            }),
+            Function(FunctionAst {
+                prototype: PrototypeAst::of("calculate2", &["a", "b", "c", "d"]),
+                body: BinaryAst::new(
+                    Add,
+                    BinaryAst::new(
+                        Add,
+                        BinaryAst::new(
+                            Multiply,
+                            BinaryAst::new(Subtract, ExprAst::variable("a"),  ExprAst::variable("b")),
+                            BinaryAst::new(Add, ExprAst::variable("c"),  ExprAst::variable("d"))
+                        ),
+                        ExprAst::variable("a")
+                    ),
+                    ExprAst::variable("b")
+                )
+            }),
+            Function(FunctionAst {
+                prototype: PrototypeAst::of("calculate3", &["a", "b", "c", "d"]),
+                body: BinaryAst::new(
+                    Add,
+                    ExprAst::variable("a"),
+                    BinaryAst::new(
+                        Multiply,
+                        ExprAst::variable("b"),
+                        BinaryAst::new(
+                            Add,
+                            BinaryAst::new(Subtract, ExprAst::variable("c"), ExprAst::variable("d")),
+                            ExprAst::variable("a")
+                        )
+                    )
+                )
+            })
+        ];
         assert_eq!(tokens, expected_ast);
     }
 
     #[test]
+    #[should_panic]
     pub fn test_binop_unmatched() {
         let input = r"
             def calculate1(a b c d) ((a - b) * ((c + d)
         ";
 
         let reader = BufReader::new(Cursor::new(input));
-        let tokens = Parser::new(Lexer::new(reader)).parse();
-        println!("{:?}", tokens);
-
-        let expected_ast = [];
-        assert_eq!(tokens, expected_ast);
+        Parser::new(Lexer::new(reader)).parse();
     }
 }
