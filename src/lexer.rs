@@ -63,15 +63,13 @@ impl<R: BufRead> Lexer<R> {
 
     pub fn read_char(&mut self) -> Option<char> {
         let mut buffer = [0; 1];
-        match self.reader.read(&mut buffer) {
-            Ok(count) => {
-                if count > 0 {
-                    Some(buffer[0] as char)
-                } else {
-                    None
-                }
-            },
-            Err(err) => panic!("Oops! Failed to read a token with error: {}", err)
+        let count = self.reader.read(&mut buffer).unwrap();
+        if count > 0 {
+            // println!("{} {}", buffer[0] as char, count);
+            Some(buffer[0] as char)
+        } else {
+            // println!("Eof");
+            None
         }
     }
 
@@ -79,6 +77,7 @@ impl<R: BufRead> Lexer<R> {
         let mut iden_str = String::new();
         while self.last_char.is_alphanumeric() { // read until we get a char that cant be in an iden
             iden_str.push(self.last_char);
+            // println!("{}", self.last_char);
             self.last_char = match self.read_char() {
                 None => break, // stop reading the iden if we reach eof
                 Some(ch) => ch
@@ -168,11 +167,19 @@ impl<R: BufRead> Lexer<R> {
 
     pub fn read_tokens(&mut self) -> Vec<Token> {
         let mut tokens = vec![];
+        let mut i = 0;
         loop {
+            if i > 100 {
+                return tokens;
+            }
             match self.read_token() {
                 Token::Eof => return tokens,
-                token => tokens.push(token),
+                token => {
+                    // println!("{:?}", token);
+                    tokens.push(token)
+                },
             }
+            i += 1;
         }
     }
 }
@@ -209,5 +216,16 @@ mod test {
             LParen, Iden("x".to_string()), Minus, Number(2.0), RParen, Iden("fib".to_string()), LParen, Number(40.0), RParen
         ];
         assert_eq!(tokens, expected_tokens);
+    }
+
+    #[test]
+    fn test_single_line() {
+        let input = r"
+            def foo(a b) a*a + 2*a*b + b*b
+        ";
+
+        let reader = BufReader::new(Cursor::new(input));
+        let tokens = Lexer::new(reader).read_tokens();
+        println!("{:?}", tokens);
     }
 }

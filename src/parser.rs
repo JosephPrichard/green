@@ -5,13 +5,12 @@ use crate::lexer::{Lexer, Token};
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Operator {
     Add,
+    Subtract,
     Multiply,
     Divide,
-    Subtract,
     Lt,
     Gt,
     Eq,
-    None,
 }
 
 impl Operator {
@@ -24,16 +23,15 @@ impl Operator {
             Operator::Lt => 30,
             Operator::Gt => 30,
             Operator::Eq => 40,
-            Operator::None => u32::MAX,
         }
     }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct BinaryAst {
-    op: Operator,
-    lhs: ExprAst,
-    rhs: ExprAst,
+    pub op: Operator,
+    pub lhs: ExprAst,
+    pub rhs: ExprAst,
 }
 
 impl BinaryAst {
@@ -49,7 +47,7 @@ pub enum ExprAst {
     Binary(Box<BinaryAst>),
     Call {
         callee: String,
-        args: Vec<ExprAst>,
+        args: Box<[ExprAst]>,
     },
     Err(String)
 }
@@ -58,12 +56,16 @@ impl ExprAst {
     pub fn variable(var: &str) -> ExprAst {
         ExprAst::Variable(var.to_string())
     }
+
+    pub fn call(callee: &str, args: Vec<ExprAst>) -> ExprAst {
+        ExprAst::Call { callee: String::from(callee), args: args.into_boxed_slice() }
+    }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PrototypeAst {
-    name: String,
-    args: Box<[String]>,
+    pub name: String,
+    pub args: Box<[String]>,
 }
 
 impl PrototypeAst {
@@ -78,12 +80,12 @@ impl PrototypeAst {
 
 #[derive(Debug, PartialEq)]
 pub struct FunctionAst {
-    prototype: PrototypeAst,
-    body: ExprAst,
+    pub prototype: PrototypeAst,
+    pub body: ExprAst,
 }
 
 #[derive(Debug, PartialEq)]
-pub enum DeclAst {
+pub enum Ast {
     Extern(PrototypeAst),
     Function(FunctionAst),
     Err(String)
@@ -107,10 +109,12 @@ impl<R: BufRead> Parser<R> {
     }
 
     pub fn read_token(&mut self) -> Token {
-        match self.last_token {
+        let token = match self.last_token {
             None => self.lexer.read_token(),
             Some(_) => self.last_token.take().unwrap(),
-        }
+        };
+        // println!("{:?}", token);
+        token
     }
 
     pub fn consume_token(&mut self) {
@@ -137,7 +141,7 @@ impl<R: BufRead> Parser<R> {
                         token => panic!("Expected an rparen token, got {:?}", token),
                     }
                 }
-                ExprAst::Call{ callee: iden, args, }
+                ExprAst::Call{ callee: iden, args: args.into_boxed_slice(), }
             },
             _ => ExprAst::Variable(iden),
         }
@@ -156,28 +160,23 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    pub fn parse_primary(&mut self, depth: u32) -> ExprAst {
+    pub fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, depth: u32) -> ExprAst {
         let token = self.read_token();
-        match token {
+        let expr = match token {
             Token::LParen => self.parse_expr(depth + 1),
             Token::Number(num) => ExprAst::Number(num),
             Token::Iden(iden) => self.parse_iden_expr(iden),
             token => panic!("Expected an iden, numeric, or lparen token at the start of an expression, got {:?}", token),
-        }
-    }
-
-    pub fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, depth: u32) -> ExprAst {
-        let expr = self.parse_primary(depth);
+        };
 
         let token = self.peek_token();
         match token {
-            Token::Def | Token::Extern | Token::Comma | Token::Eof => {
+            Token::Def | Token::Extern | Token::Comma | Token::Eof =>
                 if depth == 0 {
                     BinaryAst::new(curr_op, lhs, expr)
                 } else {
                     panic!("Reached the end of an expression with unclosed parenthesis")
-                }
-            },
+                },
             Token::RParen => {
                 if depth > 0 { // only consume if we're inside a nested subexpression
                     self.consume_token()
@@ -199,7 +198,13 @@ impl<R: BufRead> Parser<R> {
     }
 
     pub fn parse_expr(&mut self, depth: u32) -> ExprAst {
-        let expr = self.parse_primary(depth);
+        let token = self.read_token();
+        let expr = match token {
+            Token::LParen => self.parse_expr(depth + 1),
+            Token::Number(num) => ExprAst::Number(num),
+            Token::Iden(iden) => self.parse_iden_expr(iden),
+            token => panic!("Expected an iden, numeric, or lparen token at the start of an expression, got {:?}", token),
+        };
 
         let token = self.peek_token();
         match token {
@@ -211,17 +216,17 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    pub fn parse(&mut self) -> Vec<DeclAst> {
+    pub fn parse(&mut self) -> Vec<Ast> {
         let mut nodes = vec![];
 
         loop {
             let token = self.read_token();
             let node = match token {
-                Token::Extern => DeclAst::Extern(self.parse_prototype()),
+                Token::Extern => Ast::Extern(self.parse_prototype()),
                 Token::Def => {
                     let prototype = self.parse_prototype();
                     let body = self.parse_expr(0);
-                    DeclAst::Function(FunctionAst { prototype, body, })
+                    Ast::Function(FunctionAst { prototype, body, })
                 },
                 Token::Eof => return nodes,
                 token => panic!("Expected a declaration to be either an extern or a def, got {:?}", token),
@@ -260,7 +265,7 @@ mod test {
     use crate::lexer::Lexer;
     use crate::parser::ExprAst::{Call, Variable};
     use crate::parser::{BinaryAst, ExprAst, FunctionAst, Parser, PrototypeAst};
-    use crate::parser::DeclAst::{Extern, Function};
+    use crate::parser::Ast::{Extern, Function};
     use crate::parser::Operator::{Add, Divide, Multiply, Subtract};
 
     #[test]
@@ -276,8 +281,8 @@ mod test {
         ";
 
         let reader = BufReader::new(Cursor::new(input));
-        let tokens = Parser::new(Lexer::new(reader)).parse();
-        println!("{:?}", tokens);
+        let asts = Parser::new(Lexer::new(reader)).parse();
+        println!("{:?}", asts);
 
         let expected_ast = [
             Extern(PrototypeAst::of("println", &[])),
@@ -287,22 +292,22 @@ mod test {
             }),
             Function(FunctionAst {
                 prototype: PrototypeAst::of("pickMiddle", &["x", "y", "z"]),
-                body: Call {
-                    callee: "pickLeft".to_string(),
-                    args: vec![
-                        Call {
-                            callee: "pickLeft".to_string(),
-                            args: vec![
+                body: ExprAst::call(
+                    "pickLeft",
+                    vec![
+                        ExprAst::call(
+                            "pickLeft",
+                            vec![
                                 ExprAst::variable("y"),
                                 ExprAst::variable("z")
                             ]
-                        },
+                        ),
                         ExprAst::variable("z")
                     ]
-                }
+                )
             })
         ];
-        assert_eq!(tokens, expected_ast);
+        assert_eq!(asts, expected_ast);
     }
 
     #[test]
@@ -318,8 +323,8 @@ mod test {
         ";
 
         let reader = BufReader::new(Cursor::new(input));
-        let tokens = Parser::new(Lexer::new(reader)).parse();
-        println!("{:?}", tokens);
+        let asts = Parser::new(Lexer::new(reader)).parse();
+        println!("{:?}", asts);
 
         let expected_ast = [
             Function(FunctionAst {
@@ -363,7 +368,7 @@ mod test {
                 )
             }),
         ];
-        assert_eq!(tokens, expected_ast);
+        assert_eq!(asts, expected_ast);
     }
 
     #[test]
@@ -377,8 +382,8 @@ mod test {
         ";
 
         let reader = BufReader::new(Cursor::new(input));
-        let tokens = Parser::new(Lexer::new(reader)).parse();
-        println!("{:?}", tokens);
+        let asts = Parser::new(Lexer::new(reader)).parse();
+        println!("{:?}", asts);
 
         let expected_ast = [
             Function(FunctionAst {
@@ -418,7 +423,7 @@ mod test {
                 )
             })
         ];
-        assert_eq!(tokens, expected_ast);
+        assert_eq!(asts, expected_ast);
     }
 
     #[test]
