@@ -20,6 +20,7 @@ pub enum Token {
     If,
     Then,
     Else,
+    For,
     Iden(String),
     Number(f64),
     Eof
@@ -45,6 +46,7 @@ impl Debug for Token {
            Token::If => write!(f, "{}", "'if"),
            Token::Then => write!(f, "{}", "then"),
            Token::Else => write!(f, "{}", "else"),
+           Token::For => write!(f, "{}", "for"),
            Token::Iden(_) => write!(f, "{}", "<iden>"),
            Token::Number(num) => write!(f, "{}", num),
            Token::Eof => write!(f, "{}", "<eof>")
@@ -104,6 +106,7 @@ impl<R: BufRead> Lexer<R> {
             "if" => Token::If,
             "then" => Token::Then,
             "else" => Token::Else,
+            "for" => Token::For,
             _ => Token::Iden(iden_str)
         }
     }

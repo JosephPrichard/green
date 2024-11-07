@@ -1,4 +1,4 @@
-# Kaleidoscope
-A Rust implementation of LLVM's kaleidoscope tutorial.
+# Naga
+A compiled, expression based language inspired by Python.
 
 Work in progress!
