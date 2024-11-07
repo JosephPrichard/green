@@ -16,13 +16,13 @@ pub enum Operator {
 impl Operator {
     fn precedence(&self) -> u32 {
         match self {
-            Operator::Add => 10,
-            Operator::Subtract => 10,
-            Operator::Multiply => 20,
-            Operator::Divide => 20,
-            Operator::Lt => 30,
-            Operator::Gt => 30,
-            Operator::Eq => 40,
+            Operator::Add => 1,
+            Operator::Subtract => 1,
+            Operator::Multiply => 2,
+            Operator::Divide => 2,
+            Operator::Lt => 3,
+            Operator::Gt => 3,
+            Operator::Eq => 4,
         }
     }
 }
@@ -41,6 +41,19 @@ impl BinaryAst {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct IfAst {
+    pub cond: ExprAst,
+    pub then: ExprAst,
+    pub otherwise: ExprAst,
+}
+
+impl IfAst {
+    pub fn new(cond: ExprAst, then: ExprAst, otherwise: ExprAst) -> ExprAst {
+        ExprAst::If(Box::new(IfAst{ cond, then, otherwise, }))
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum ExprAst {
     Number(f64),
     Variable(String),
@@ -49,6 +62,7 @@ pub enum ExprAst {
         callee: String,
         args: Box<[ExprAst]>,
     },
+    If(Box<IfAst>),
     Err(String)
 }
 
@@ -101,14 +115,14 @@ impl<R: BufRead> Parser<R> {
         Parser{ lexer, last_token: None }
     }
 
-    pub fn peek_token(&mut self) -> &Token {
+    fn peek_token(&mut self) -> &Token {
         match self.last_token {
             Some(ref last_token) => last_token,
             None => self.last_token.insert(self.lexer.read_token()),
         }
     }
 
-    pub fn read_token(&mut self) -> Token {
+    fn read_token(&mut self) -> Token {
         let token = match self.last_token {
             None => self.lexer.read_token(),
             Some(_) => self.last_token.take().unwrap(),
@@ -117,14 +131,11 @@ impl<R: BufRead> Parser<R> {
         token
     }
 
-    pub fn consume_token(&mut self) {
-        match self.last_token {
-            None => (),
-            Some(_) => self.last_token = None,
-        };
+    fn consume_token(&mut self) {
+        self.last_token = None
     }
 
-    pub fn parse_iden_expr(&mut self, iden: String) -> ExprAst {
+    fn parse_iden_expr(&mut self, iden: String) -> ExprAst {
         let token = self.peek_token();
         match token {
             Token::LParen => {
@@ -147,7 +158,7 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    pub fn parse_operator(&mut self) -> Operator {
+    fn parse_operator(&mut self) -> Operator {
         match self.read_token() {
             Token::Plus => Operator::Add,
             Token::Minus => Operator::Subtract,
@@ -160,26 +171,47 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    pub fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, depth: u32) -> ExprAst {
+    fn parse_if_expr(&mut self) -> ExprAst {
+        let cond_expr = self.parse_expr(0);
+        let token = self.read_token();
+        match token {
+            Token::Then => (),
+            token => panic!("Expected <then> after <if> condition, got {:?}", token),
+        }
+
+        let then_expr = self.parse_expr(0);
+        let token = self.read_token();
+        match token {
+            Token::Else => (),
+            token => panic!("Expected <else> after <then> expression, got {:?}", token),
+        }
+
+        let otherwise_expr = self.parse_expr(0);
+
+        ExprAst::If(Box::new(IfAst { cond: cond_expr, then: then_expr, otherwise: otherwise_expr, }))
+    }
+
+    fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, depth: u32) -> ExprAst {
         let token = self.read_token();
         let expr = match token {
             Token::LParen => self.parse_expr(depth + 1),
             Token::Number(num) => ExprAst::Number(num),
             Token::Iden(iden) => self.parse_iden_expr(iden),
+            Token::If => self.parse_if_expr(),
             token => panic!("Expected an iden, numeric, or lparen token at the start of an expression, got {:?}", token),
         };
 
         let token = self.peek_token();
         match token {
-            Token::Def | Token::Extern | Token::Comma | Token::Eof =>
+            Token::Def | Token::Extern | Token::Comma | Token::Then | Token::Else | Token::Eof =>
                 if depth == 0 {
                     BinaryAst::new(curr_op, lhs, expr)
                 } else {
                     panic!("Reached the end of an expression with unclosed parenthesis")
                 },
             Token::RParen => {
-                if depth > 0 { // only consume if we're inside a nested subexpression
-                    self.consume_token()
+                if depth != 0 { // only consume inside a nested subexpression
+                    self.consume_token();
                 }
                 BinaryAst::new(curr_op, lhs, expr)
             },
@@ -197,18 +229,25 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    pub fn parse_expr(&mut self, depth: u32) -> ExprAst {
+    fn parse_expr(&mut self, depth: u32) -> ExprAst {
         let token = self.read_token();
         let expr = match token {
             Token::LParen => self.parse_expr(depth + 1),
             Token::Number(num) => ExprAst::Number(num),
             Token::Iden(iden) => self.parse_iden_expr(iden),
+            Token::If => self.parse_if_expr(),
             token => panic!("Expected an iden, numeric, or lparen token at the start of an expression, got {:?}", token),
         };
 
         let token = self.peek_token();
         match token {
-            Token::Def | Token::Extern | Token::Comma | Token::RParen | Token::Eof => expr,
+            Token::Def | Token::Extern | Token::Comma | Token::Then | Token::Else | Token::Eof => expr,
+            Token::RParen => {
+                if depth != 0 { // only consume inside a nested subexpression
+                    self.consume_token();
+                }
+                expr
+            },
             _ => {
                 let op = self.parse_operator();
                 self.parse_binop_rhs(expr, op, depth)
@@ -235,7 +274,7 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    pub fn parse_prototype(&mut self) -> PrototypeAst {
+    fn parse_prototype(&mut self) -> PrototypeAst {
         let token = self.read_token();
         let name = match token {
             Token::Iden(iden) => iden,
@@ -263,10 +302,10 @@ impl<R: BufRead> Parser<R> {
 mod test {
     use std::io::{BufReader, Cursor};
     use crate::lexer::Lexer;
-    use crate::parser::ExprAst::{Call, Variable};
-    use crate::parser::{BinaryAst, ExprAst, FunctionAst, Parser, PrototypeAst};
+    use crate::parser::ExprAst::{Call, Number, Variable};
+    use crate::parser::{BinaryAst, ExprAst, FunctionAst, IfAst, Parser, PrototypeAst};
     use crate::parser::Ast::{Extern, Function};
-    use crate::parser::Operator::{Add, Divide, Multiply, Subtract};
+    use crate::parser::Operator::{Add, Divide, Eq, Multiply, Subtract};
 
     #[test]
     pub fn test_nested_functions() {
@@ -320,6 +359,12 @@ mod test {
             def calculate3(a b c d) a + b * c + d
 
             def calculate4(a b c d) a * b - c * d
+
+            def calculate5(a b) (a - b)
+
+            def calculate6(a b c d) (a - b) * (c + d) + a + b
+
+            def calculate7(a b c d) (a + (b * (c - d + a)))
         ";
 
         let reader = BufReader::new(Cursor::new(input));
@@ -367,31 +412,12 @@ mod test {
                     BinaryAst::new(Multiply, ExprAst::variable("c"), ExprAst::variable("d"))
                 )
             }),
-        ];
-        assert_eq!(asts, expected_ast);
-    }
-
-    #[test]
-    pub fn test_binop_subexprs() {
-        let input = r"
-            def calculate1(a b) (a - b)
-
-            def calculate2(a b c d) (a - b) * (c + d) + a + b
-
-            def calculate3(a b c d) (a + (b * (c - d + a)))
-        ";
-
-        let reader = BufReader::new(Cursor::new(input));
-        let asts = Parser::new(Lexer::new(reader)).parse();
-        println!("{:?}", asts);
-
-        let expected_ast = [
             Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate1", &["a", "b"]),
+                prototype: PrototypeAst::of("calculate5", &["a", "b"]),
                 body: BinaryAst::new(Subtract, Variable("a".to_string()), Variable("b".to_string()))
             }),
             Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate2", &["a", "b", "c", "d"]),
+                prototype: PrototypeAst::of("calculate6", &["a", "b", "c", "d"]),
                 body: BinaryAst::new(
                     Add,
                     BinaryAst::new(
@@ -407,7 +433,7 @@ mod test {
                 )
             }),
             Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate3", &["a", "b", "c", "d"]),
+                prototype: PrototypeAst::of("calculate7", &["a", "b", "c", "d"]),
                 body: BinaryAst::new(
                     Add,
                     ExprAst::variable("a"),
@@ -420,6 +446,63 @@ mod test {
                             ExprAst::variable("a")
                         )
                     )
+                )
+            })
+        ];
+        assert_eq!(asts, expected_ast);
+    }
+
+    #[test]
+    pub fn test_cond_exprs() {
+        let input = r"
+            def cond(a b) if a = b then a + 1 else b - 1
+
+            def cond1(a b c) if a = b then (if b = c then a else b) else c
+        ";
+
+        let reader = BufReader::new(Cursor::new(input));
+        let asts = Parser::new(Lexer::new(reader)).parse();
+        println!("{:?}", asts);
+
+        let expected_ast = [
+            Function(FunctionAst {
+                prototype: PrototypeAst::of("cond", &vec!["a", "b"]),
+                body: IfAst::new(
+                    BinaryAst::new(
+                        Eq,
+                        ExprAst::variable("a"),
+                        ExprAst::variable("b")
+                    ),
+                    BinaryAst::new(
+                        Add,
+                        ExprAst::variable("a"),
+                        Number(1.0)
+                    ),
+                    BinaryAst::new(
+                        Subtract,
+                        ExprAst::variable("b"),
+                        Number(1.0)
+                    )
+                )
+            }),
+            Function(FunctionAst {
+                prototype: PrototypeAst::of("cond1", &vec!["a", "b", "c"]),
+                body: IfAst::new(
+                    BinaryAst::new(
+                        Eq,
+                        ExprAst::variable("a"),
+                        ExprAst::variable("b")
+                    ),
+                    IfAst::new(
+                        BinaryAst::new(
+                            Eq,
+                            ExprAst::variable("b"),
+                            ExprAst::variable("c")
+                        ),
+                        ExprAst::variable("a"),
+                        ExprAst::variable("b")
+                    ),
+                    ExprAst::variable("c")
                 )
             })
         ];

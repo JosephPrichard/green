@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Write;
-use crate::parser::{Ast, BinaryAst, ExprAst, FunctionAst, Operator, PrototypeAst};
+use crate::parser::{Ast, BinaryAst, ExprAst, FunctionAst, IfAst, Operator, PrototypeAst};
 
 pub struct CodegenCtx<'ast, W: Write> {
     w: &'ast mut W,
@@ -52,18 +52,16 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
 
         writeln!(self.w, " {{").unwrap();
 
-        let mut bb = "entry:\n".to_string();
+        writeln!(self.w, "entry:").unwrap();
 
-        let reg = self.codegen_expr(&mut bb, &func.body)?;
-        writeln!(bb, "\tret double {}", reg).unwrap();
+        let reg = self.codegen_expr(&func.body)?;
+        writeln!(self.w, "\tret double {}", reg).unwrap();
 
-        write!(self.w, "{}", bb).unwrap();
         writeln!(self.w, "}}\n").unwrap();
-
         Ok(())
     }
 
-    pub fn codegen_decl(&mut self, ast: &'ast Ast) -> Result<(), String> {
+    fn codegen_decl(&mut self, ast: &'ast Ast) -> Result<(), String> {
         match ast {
             Ast::Extern(proto) => {
                 self.codegen_prototype(proto, false);
@@ -75,12 +73,17 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
         }
     }
 
-    pub fn create_reg(&mut self) -> String {
+    fn create_reg(&mut self) -> String {
         self.index += 1;
         format!("%tmp{}", self.index)
     }
 
-    fn codegen_call(&mut self, bb: &mut String, callee: &str, args: &'ast [ExprAst]) -> Result<String, String> {
+    fn create_label(&mut self, prefix: &str) -> String {
+        self.index += 1;
+        format!("{}{}", prefix, self.index)
+    }
+
+    fn codegen_call(&mut self, callee: &str, args: &'ast [ExprAst]) -> Result<String, String> {
         match self.func_table.get(callee) {
             None => panic!("Unbound function reference: '{}'", callee),
             Some(proto) => {
@@ -92,91 +95,118 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
 
         let mut values = vec![];
         for expr in args {
-            values.push(self.codegen_expr(bb, expr)?);
+            values.push(self.codegen_expr(expr)?);
         }
 
         let reg = self.create_reg();
-        write!(bb, "\t{} = call double @{}(", reg, callee).unwrap();
+        write!(self.w, "\t{} = call double @{}(", reg, callee).unwrap();
         for (i, value) in values.iter().enumerate() {
-            write!(bb, "double {}", value).unwrap();
+            write!(self.w, "double {}", value).unwrap();
             if i < values.len() - 1 {
-                write!(bb, ", ").unwrap();
+                write!(self.w, ", ").unwrap();
             }
         }
-        writeln!(bb, ")").unwrap();
+        writeln!(self.w, ")").unwrap();
 
         Ok(reg)
     }
 
-    fn codegen_binary(&mut self, bb: &mut String, ast: &'ast BinaryAst) -> Result<String, String> {
-        let lhs = self.codegen_expr(bb, &ast.lhs)?;
-        let rhs = self.codegen_expr(bb, &ast.rhs)?;
+    fn codegen_bin_expr(&mut self, ast: &'ast BinaryAst) -> Result<String, String> {
+        let lhs = self.codegen_expr(&ast.lhs)?;
+        let rhs = self.codegen_expr(&ast.rhs)?;
 
         let reg = match ast.op {
             Operator::Add => {
                 let reg = self.create_reg();
-                writeln!(bb, "\t{} = fadd float {}, {}", reg, lhs, rhs).unwrap();
+                writeln!(self.w, "\t{} = fadd float {}, {}", reg, lhs, rhs).unwrap();
                 reg
             },
             Operator::Subtract => {
                 let reg = self.create_reg();
-                writeln!(bb, "\t{} = fsub float {}, {}", reg, lhs, rhs).unwrap();
+                writeln!(self.w, "\t{} = fsub float {}, {}", reg, lhs, rhs).unwrap();
                 reg
             },
             Operator::Multiply => {
                 let reg = self.create_reg();
-                writeln!(bb, "\t{} = fmul float {}, {}", reg, lhs, rhs).unwrap();
+                writeln!(self.w, "\t{} = fmul float {}, {}", reg, lhs, rhs).unwrap();
                 reg
             },
             Operator::Divide => {
                 let reg = self.create_reg();
-                writeln!(bb, "\t{} = fdiv float {}, {}", reg, lhs, rhs).unwrap();
+                writeln!(self.w, "\t{} = fdiv float {}, {}", reg, lhs, rhs).unwrap();
                 reg
             },
             Operator::Lt => {
                 let reg1 = self.create_reg();
-                writeln!(bb, "\t{} = fcmp ult float {}, {}\n", reg1, lhs, rhs).unwrap();
+                writeln!(self.w, "\t{} = fcmp ult float {}, {}", reg1, lhs, rhs).unwrap();
                 let reg2 = self.create_reg();
-                writeln!(bb, "\t{} = uitofp <1 x i1> {} to <1 x float>\n", reg2, reg1).unwrap();
+                writeln!(self.w, "\t{} = uitofp <1 x i1> {} to <1 x float>", reg2, reg1).unwrap();
                 reg2
             }
             Operator::Gt => {
                 let reg1 = self.create_reg();
-                writeln!(bb, "\t{} = fcmp ugt float {}, {}\n", reg1, lhs, rhs).unwrap();
+                writeln!(self.w, "\t{} = fcmp ugt float {}, {}", reg1, lhs, rhs).unwrap();
                 let reg2 = self.create_reg();
-                writeln!(bb, "\t{} = uitofp <1 x i1> {} to <1 x float>n", reg2, reg1).unwrap();
+                writeln!(self.w, "\t{} = uitofp <1 x i1> {} to <1 x float>n", reg2, reg1).unwrap();
                 reg2
             }
             Operator::Eq => {
                 let reg1 = self.create_reg();
-                writeln!(bb, "\t{} = fcmp ueq float {}, {}\n", reg1, lhs, rhs).unwrap();
+                writeln!(self.w, "\t{} = fcmp ueq float {}, {}", reg1, lhs, rhs).unwrap();
                 let reg2 = self.create_reg();
-                writeln!(bb, "\t{} = uitofp <1 x i1> {} to <1 x float>\n", reg2, reg1).unwrap();
+                writeln!(self.w, "\t{} = uitofp <1 x i1> {} to <1 x float>", reg2, reg1).unwrap();
                 reg2
             }
         };
         Ok(reg)
     }
 
+    fn codegen_if_expr(&mut self, expr: &'ast IfAst) -> Result<String, String> {
+        let cond = self.codegen_expr(&expr.cond)?;
+
+        let then_bb = self.create_label("then");
+        let other_bb = self.create_label("else");
+        let end_bb = self.create_label("end");
+
+        // decide which basic block we need to branch to
+        writeln!(self.w, "\tbr i1 {}, label %{}, label %{}", cond, then_bb, other_bb).unwrap();
+
+        // create the then basic block
+        writeln!(self.w, "{}:", then_bb).unwrap();
+        let then = self.codegen_expr(&expr.then)?;
+        writeln!(self.w, "\tbr label %{}", end_bb).unwrap();
+
+        // create the else basic block
+        writeln!(self.w, "{}:", other_bb).unwrap();
+        let otherwise = self.codegen_expr(&expr.otherwise)?;
+        writeln!(self.w, "\tbr label %{}", end_bb).unwrap();
+
+        // create the end basic block, and get the "result" value
+        writeln!(self.w, "{}:", end_bb).unwrap();
+        let reg = self.create_reg();
+        writeln!(self.w, "\t{} = phi float [{}, %{}], [{}, %{}]", reg, then, then_bb, otherwise, other_bb).unwrap();
+
+        Ok(reg)
+    }
+
     // an expression evaluates to a string that is either a literal or a register
-    pub fn codegen_expr(&mut self, bb: &mut String, expr: &'ast ExprAst) -> Result<String, String> {
+    fn codegen_expr(&mut self, expr: &'ast ExprAst) -> Result<String, String> {
         match expr {
             ExprAst::Number(num) => Ok(num.to_string()),
-            ExprAst::Variable(var) => {
-                match self.var_table.get(var.as_str()) {
-                    None => panic!("Unbound variable reference: '{}'", var),
-                    Some(value) => Ok(value.clone()),
-                }
+            ExprAst::Variable(var) => match self.var_table.get(var.as_str()) {
+                None => panic!("Unbound variable reference: '{}'", var),
+                Some(value) => Ok(value.clone()),
             }
-            ExprAst::Binary(ast) => self.codegen_binary(bb, ast.as_ref()),
-            ExprAst::Call { callee, args } => self.codegen_call(bb, callee, args),
+            ExprAst::Binary(ast) => self.codegen_bin_expr(ast.as_ref()),
+            ExprAst::Call { callee, args } => self.codegen_call(callee, args),
+            ExprAst::If(ast) => self.codegen_if_expr(ast.as_ref()),
             ExprAst::Err(err) => panic!("Fatal: encountered error node in codegen phase {}", err),
         }
     }
 }
 
 mod test {
-    use std::io::{BufReader, BufWriter, Cursor};
+    use std::io::{BufReader, Cursor};
     use crate::codegen::CodegenCtx;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
@@ -191,6 +221,25 @@ mod test {
             def bar(a b) foo(a * 2, b + 1) + sqrt(4)
 
             def main() bar(1, 2)
+        ";
+
+        let reader = BufReader::new(Cursor::new(input));
+        let asts = Parser::new(Lexer::new(reader)).parse();
+
+        let mut output = String::new();
+
+        let mut codegen = CodegenCtx::new(&mut output);
+        codegen.codegen(&asts).unwrap();
+
+        println!("{}", output);
+    }
+
+    #[test]
+    pub fn test_compile_cond() {
+        let input = r"
+            def cond(a b) if (a = b) then (if (b < 10) then (a + b + 10) else 10) else (b + 50 * 2)
+
+            def main() cond(10, 50)
         ";
 
         let reader = BufReader::new(Cursor::new(input));

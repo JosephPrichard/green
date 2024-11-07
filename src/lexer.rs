@@ -17,6 +17,9 @@ pub enum Token {
     Gt,
     Eq,
     Comma,
+    If,
+    Then,
+    Else,
     Iden(String),
     Number(f64),
     Eof
@@ -39,6 +42,9 @@ impl Debug for Token {
            Token::Gt => write!(f, "{}", "'>'"),
            Token::Eq => write!(f, "{}", "'='"),
            Token::Comma => write!(f, "{}", "','"),
+           Token::If => write!(f, "{}", "'if"),
+           Token::Then => write!(f, "{}", "then"),
+           Token::Else => write!(f, "{}", "else"),
            Token::Iden(_) => write!(f, "{}", "<iden>"),
            Token::Number(num) => write!(f, "{}", num),
            Token::Eof => write!(f, "{}", "<eof>")
@@ -48,7 +54,6 @@ impl Debug for Token {
 
 pub struct Lexer<R: BufRead> {
     reader: BufReader<R>,
-    last_char: char,
     strbuf: String, // reusable buffer for temporary strings
 }
 
@@ -56,63 +61,74 @@ impl<R: BufRead> Lexer<R> {
     pub fn new(reader: BufReader<R>) -> Lexer<R> {
         Lexer {
             reader,
-            last_char: ' ',
             strbuf: String::new()
         }
     }
 
-    pub fn read_char(&mut self) -> Option<char> {
-        let mut buffer = [0; 1];
-        let count = self.reader.read(&mut buffer).unwrap();
+    fn read_char(&mut self) -> char {
+        let mut buf = [0; 1];
+        let count = self.reader.read(&mut buf).unwrap();
         if count > 0 {
-            // println!("{} {}", buffer[0] as char, count);
-            Some(buffer[0] as char)
+            buf[0] as char
         } else {
-            // println!("Eof");
-            None
+            '\0'
         }
     }
 
-    pub fn read_iden(&mut self) -> Token {
+    fn peek_char(&mut self) -> char {
+        let buf = self.reader.fill_buf().unwrap();
+        if !buf.is_empty() {
+            buf[0] as char
+        } else {
+            '\0'
+        }
+    }
+
+    fn consume_char(&mut self) {
+        self.reader.consume(1)
+    }
+
+    fn read_iden(&mut self) -> Token {
         let mut iden_str = String::new();
-        while self.last_char.is_alphanumeric() { // read until we get a char that cant be in an iden
-            iden_str.push(self.last_char);
-            // println!("{}", self.last_char);
-            self.last_char = match self.read_char() {
-                None => break, // stop reading the iden if we reach eof
-                Some(ch) => ch
+        loop {
+            let ch = self.peek_char();
+            if ch == '\0' || (!ch.is_alphanumeric() && ch != '_') {
+                break
             }
+            iden_str.push(ch);
+            self.consume_char();
         }
         match iden_str.as_str() {
             "def" => Token::Def,
             "extern" => Token::Extern,
+            "if" => Token::If,
+            "then" => Token::Then,
+            "else" => Token::Else,
             _ => Token::Iden(iden_str)
         }
     }
 
-    pub fn read_number(&mut self) -> Token {
+    fn read_number(&mut self) -> Token {
         self.strbuf.clear();
         loop {
-            self.strbuf.push(self.last_char);
-            self.last_char = match self.read_char() {
-                None => break, // stop reading the num if we reach eof
-                Some(ch) => ch
-            };
-            if !self.last_char.is_digit(10) && self.last_char != '.' {
-                break;
+            let ch = self.peek_char();
+            if ch == '\0' || (!ch.is_digit(10) && ch != '.') {
+                break
             }
+            self.strbuf.push(ch);
+            self.consume_char();
         }
         let num: f64 = self.strbuf.parse().unwrap();
         Token::Number(num)
     }
 
-    pub fn skip_comment(&mut self) -> Token {
+    fn skip_comment(&mut self) -> Token {
         loop {
-            self.last_char = match self.read_char() {
-                None => return Token::Eof, // eof in comment means there cannot be anymore tokens
-                Some(ch) => ch
-            };
-            if self.last_char == '\n' || self.last_char == '\r' {
+            let ch = self.read_char();
+            if ch == '\0' {
+                return Token::Eof
+            }
+            if ch == '\n' || ch == '\r' {
                 break;
             }
         }
@@ -120,58 +136,73 @@ impl<R: BufRead> Lexer<R> {
         self.read_token()
     }
 
-    pub fn read_misc_token(&self) -> Token {
-        let curr_char = self.last_char;
-        match curr_char {
+    fn read_misc_token(&mut self) -> Token {
+        match self.read_char() {
             '(' => Token::LParen,
             ')' => Token::RParen,
             '+' => Token::Plus,
             '-' => Token::Minus,
             '*' => Token::Times,
             '/' => Token::Slash,
-            '<' => Token::Lt,
-            '>' => Token::Gt,
+            '<' => {
+                let ch = self.peek_char();
+                if ch == '\0' {
+                    return Token::Eof
+                }
+                if ch == '=' {
+                    self.consume_char();
+                    Token::Leq
+                } else {
+                    Token::Lt
+                }
+            },
+            '>' => {
+                let ch = self.peek_char();
+                if ch == '\0' {
+                    return Token::Eof
+                }
+                if ch == '=' {
+                    self.consume_char();
+                    Token::Geq
+                } else {
+                    Token::Gt
+                }
+            },
             '=' => Token::Eq,
             ',' => Token::Comma,
-            // Token::Geq,
-            // Token::Leq,
-            _ => panic!("Unknown token has been reached {}", self.last_char),
+            '\0' => Token::Eof,
+            ch => panic!("Invalid or unknown character: '{}'", ch),
         }
     }
 
     pub fn read_token(&mut self) -> Token {
-        while self.last_char.is_whitespace() { // skip all whitespace until, last_char will be the a non-whitespace at the end of the loop
-            self.last_char = match self.read_char() {
-                None => return Token::Eof,
-                Some(ch) => ch
-            };
+        loop {
+            let ch = self.peek_char();
+            if ch == '\0' {
+                return Token::Eof
+            } else if !ch.is_whitespace() {
+                break
+            }
+            self.consume_char();
         }
 
-        if self.last_char.is_alphabetic() {
+        let ch = self.peek_char();
+        if ch.is_alphabetic() {
             self.read_iden()
-        } else if self.last_char.is_digit(10) || self.last_char == '.' {
+        } else if ch.is_digit(10) || ch == '.' {
             self.read_number()
-        } else if self.last_char == '#' {
+        } else if ch == '#' {
             // a comment, so skip until end of line
             self.skip_comment()
         } else {
             // otherwise, handle any misc characters
-            let token = self.read_misc_token();
-            self.last_char = match self.read_char() {
-                None => return Token::Eof, // eof in comment means there cannot be anymore tokens
-                Some(ch) => ch, // consume the token since we just used it
-            };
-            token
+            self.read_misc_token()
         }
     }
 
     pub fn read_tokens(&mut self) -> Vec<Token> {
         let mut tokens = vec![];
-        let mut i = 0;
-        loop {
-            if i > 100 {
-                return tokens;
-            }
+        for _ in 0..100000 {
             match self.read_token() {
                 Token::Eof => return tokens,
                 token => {
@@ -179,8 +210,8 @@ impl<R: BufRead> Lexer<R> {
                     tokens.push(token)
                 },
             }
-            i += 1;
         }
+        panic!("Fatal: Exceeded maximum token limit. Does the lexer have an infinite loop?")
     }
 }
 
@@ -196,7 +227,7 @@ mod test {
 
             # Compute the x'th fibonacci number.
             def fib(x)
-              if x < 3 then
+              if 3 <= x then
                 1
               else
                 fib(x-1)+fib(x-2)
@@ -210,8 +241,8 @@ mod test {
 
         let expected_tokens = [
             Extern, Iden("atan".to_string()), LParen, RParen,
-            Def, Iden("fib".to_string()), LParen, Iden("x".to_string()), RParen, Iden("if".to_string()),
-            Iden("x".to_string()), Lt, Number(3.0), Iden("then".to_string()), Number(1.0), Iden("else".to_string()),
+            Def, Iden("fib".to_string()), LParen, Iden("x".to_string()), RParen, If,
+            Number(3.0), Leq, Iden("x".to_string()), Then, Number(1.0), Else,
             Iden("fib".to_string()), LParen, Iden("x".to_string()), Minus, Number(1.0), RParen, Plus, Iden("fib".to_string()),
             LParen, Iden("x".to_string()), Minus, Number(2.0), RParen, Iden("fib".to_string()), LParen, Number(40.0), RParen
         ];
