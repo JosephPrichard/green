@@ -54,6 +54,20 @@ impl IfAst {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct ForAst {
+    pub var: String,
+    pub beg: ExprAst,
+    pub end: ExprAst,
+    pub body: ExprAst,
+}
+
+impl ForAst {
+    pub fn new(var: String, beg: ExprAst, end: ExprAst, body: ExprAst) -> ExprAst {
+        ExprAst::For(Box::new(ForAst { var, beg, end, body }))
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum ExprAst {
     Number(f64),
     Variable(String),
@@ -63,6 +77,7 @@ pub enum ExprAst {
         args: Box<[ExprAst]>,
     },
     If(Box<IfAst>),
+    For(Box<ForAst>),
     Err(String)
 }
 
@@ -127,12 +142,19 @@ impl<R: BufRead> Parser<R> {
             None => self.lexer.read_token(),
             Some(_) => self.last_token.take().unwrap(),
         };
-        // println!("{:?}", token);
+        println!("{:?}", token);
         token
     }
 
     fn consume_token(&mut self) {
         self.last_token = None
+    }
+
+    fn expect_token(&mut self, expected: Token) {
+        let token = self.read_token();
+        if token != expected {
+            panic!("Expected a {:?}, but got {:?}", expected, token)
+        }
     }
 
     fn parse_iden_expr(&mut self, iden: String) -> ExprAst {
@@ -149,7 +171,7 @@ impl<R: BufRead> Parser<R> {
                     match token {
                         Token::Comma => (), // consume the comma and keep parsing args
                         Token::RParen => break, // stop parsing args
-                        token => panic!("Expected an rparen token, got {:?}", token),
+                        token => panic!("Expected a '(' token, got {:?}", token),
                     }
                 }
                 ExprAst::Call{ callee: iden, args: args.into_boxed_slice(), }
@@ -173,47 +195,69 @@ impl<R: BufRead> Parser<R> {
 
     fn parse_if_expr(&mut self) -> ExprAst {
         let cond_expr = self.parse_expr(0);
-        let token = self.read_token();
-        match token {
-            Token::Then => (),
-            token => panic!("Expected <then> after <if> condition, got {:?}", token),
-        }
+
+        self.expect_token(Token::Then);
 
         let then_expr = self.parse_expr(0);
-        let token = self.read_token();
-        match token {
-            Token::Else => (),
-            token => panic!("Expected <else> after <then> expression, got {:?}", token),
-        }
+
+        self.expect_token(Token::Else);
 
         let otherwise_expr = self.parse_expr(0);
 
         ExprAst::If(Box::new(IfAst { cond: cond_expr, then: then_expr, otherwise: otherwise_expr, }))
     }
 
-    fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, depth: u32) -> ExprAst {
+    fn parse_for_expr(&mut self) -> ExprAst {
         let token = self.read_token();
-        let expr = match token {
+        let var_iden = match token {
+            Token::Iden(iden) => iden,
+            token => panic!("Expected <iden> variable at the beginning of a for loop, got {:?}", token),
+        };
+
+        self.expect_token(Token::In);
+
+        let beg_expr = self.parse_expr(0);
+
+        self.expect_token(Token::To);
+
+        let end_expr = self.parse_expr(0);
+
+        self.expect_token(Token::Colon);
+
+        let body_expr = self.parse_expr(0);
+
+        ExprAst::For(Box::new(ForAst { var: var_iden, beg: beg_expr, end: end_expr, body: body_expr }))
+    }
+
+    fn parse_binop_lhs(&mut self, depth: u32) -> ExprAst {
+        let token = self.read_token();
+        match token {
             Token::LParen => self.parse_expr(depth + 1),
             Token::Number(num) => ExprAst::Number(num),
             Token::Iden(iden) => self.parse_iden_expr(iden),
             Token::If => self.parse_if_expr(),
-            token => panic!("Expected an iden, numeric, or lparen token at the start of an expression, got {:?}", token),
-        };
+            Token::For => self.parse_for_expr(),
+            token => panic!("Expected an <iden>, numeric, or '(' token at the start of an expression, got {:?}", token),
+        }
+    }
+
+    fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, depth: u32) -> ExprAst {
+        let expr = self.parse_binop_lhs(depth);
 
         let token = self.peek_token();
         match token {
-            Token::Def | Token::Extern | Token::Comma | Token::Then | Token::Else | Token::Eof =>
-                if depth == 0 {
-                    BinaryAst::new(curr_op, lhs, expr)
-                } else {
-                    panic!("Reached the end of an expression with unclosed parenthesis")
-                },
             Token::RParen => {
                 if depth != 0 { // only consume inside a nested subexpression
                     self.consume_token();
                 }
                 BinaryAst::new(curr_op, lhs, expr)
+            },
+            _ if token.is_reserved() => {
+                if depth == 0 {
+                    BinaryAst::new(curr_op, lhs, expr)
+                } else {
+                    panic!("Reached the end of an expression with unclosed parenthesis")
+                }
             },
             _ => {
                 let next_op = self.parse_operator();
@@ -230,24 +274,17 @@ impl<R: BufRead> Parser<R> {
     }
 
     fn parse_expr(&mut self, depth: u32) -> ExprAst {
-        let token = self.read_token();
-        let expr = match token {
-            Token::LParen => self.parse_expr(depth + 1),
-            Token::Number(num) => ExprAst::Number(num),
-            Token::Iden(iden) => self.parse_iden_expr(iden),
-            Token::If => self.parse_if_expr(),
-            token => panic!("Expected an iden, numeric, or lparen token at the start of an expression, got {:?}", token),
-        };
+        let expr = self.parse_binop_lhs(depth);
 
         let token = self.peek_token();
         match token {
-            Token::Def | Token::Extern | Token::Comma | Token::Then | Token::Else | Token::Eof => expr,
             Token::RParen => {
                 if depth != 0 { // only consume inside a nested subexpression
                     self.consume_token();
                 }
                 expr
             },
+            _ if token.is_reserved() => expr,
             _ => {
                 let op = self.parse_operator();
                 self.parse_binop_rhs(expr, op, depth)
@@ -268,7 +305,7 @@ impl<R: BufRead> Parser<R> {
                     Ast::Function(FunctionAst { prototype, body, })
                 },
                 Token::Eof => return nodes,
-                token => panic!("Expected a declaration to be either an extern or a def, got {:?}", token),
+                token => panic!("Expected a declaration to be either an `extern` or a `def`, got {:?}", token),
             };
             nodes.push(node);
         }
@@ -278,20 +315,18 @@ impl<R: BufRead> Parser<R> {
         let token = self.read_token();
         let name = match token {
             Token::Iden(iden) => iden,
-            token => panic!("Expected an iden token while parsing prototype, got {:?}", token),
+            token => panic!("Expected an <iden> token while parsing prototype, got {:?}", token),
         };
-        let token = self.read_token();
-        match token {
-            Token::LParen => (), // discard
-            token => panic!("Expected an lparen token while parsing prototype got {:?}", token),
-        };
+
+        self.expect_token(Token::LParen);
+
         let mut args = vec![];
         loop {
             let token = self.read_token();
             let arg = match token {
                 Token::Iden(iden) => iden,
                 Token::RParen => break,
-                token => panic!("Expected an iden token while parsing prototype got {:?}", token),
+                token => panic!("Expected an <iden> token while parsing prototype got {:?}", token),
             };
             args.push(arg);
         }
@@ -303,7 +338,7 @@ mod test {
     use std::io::{BufReader, Cursor};
     use crate::lexer::Lexer;
     use crate::parser::ExprAst::{Call, Number, Variable};
-    use crate::parser::{BinaryAst, ExprAst, FunctionAst, IfAst, Parser, PrototypeAst};
+    use crate::parser::{BinaryAst, ExprAst, ForAst, FunctionAst, IfAst, Parser, PrototypeAst};
     use crate::parser::Ast::{Extern, Function};
     use crate::parser::Operator::{Add, Divide, Eq, Multiply, Subtract};
 
@@ -458,6 +493,10 @@ mod test {
             def cond(a b) if a = b then a + 1 else b - 1
 
             def cond1(a b c) if a = b then (if b = c then a else b) else c
+
+            def loop(x)
+                for i in 0 to x:
+                    puts(i)
         ";
 
         let reader = BufReader::new(Cursor::new(input));
@@ -503,6 +542,15 @@ mod test {
                         ExprAst::variable("b")
                     ),
                     ExprAst::variable("c")
+                )
+            }),
+            Function(FunctionAst {
+                prototype: PrototypeAst::of("loop", &vec!["x"]),
+                body: ForAst::new(
+                    "i".to_string(),
+                    Number(0.0),
+                    ExprAst::variable("x"),
+                    ExprAst::call("puts", vec![ExprAst::variable("i")]),
                 )
             })
         ];

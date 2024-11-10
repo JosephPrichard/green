@@ -1,19 +1,20 @@
 use std::collections::HashMap;
 use std::fmt::Write;
-use crate::parser::{Ast, BinaryAst, ExprAst, FunctionAst, IfAst, Operator, PrototypeAst};
+use crate::builder::IRBuilder;
+use crate::parser::{Ast, BinaryAst, ExprAst, ForAst, FunctionAst, IfAst, Operator, PrototypeAst};
 
 pub struct CodegenCtx<'ast, W: Write> {
-    w: &'ast mut W,
-    index: u32,
+    builder: IRBuilder<'ast, W>,
+    prev_lbl: Option<String>,
     func_table: HashMap<&'ast str, &'ast PrototypeAst>, // maps function names to prototypes
     var_table: HashMap<&'ast str, String> // maps variable names to values
 }
 
 impl<'ast, W: Write> CodegenCtx<'ast, W> {
-    pub fn new(writer: &'ast mut W) -> CodegenCtx<'ast, W> {
+    pub fn new(builder: IRBuilder<'ast, W>) -> CodegenCtx<'ast, W> {
         CodegenCtx {
-            w: writer,
-            index: 0,
+            builder,
+            prev_lbl: None,
             func_table: HashMap::new(),
             var_table: HashMap::new()
         }
@@ -27,37 +28,33 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
     }
 
     fn codegen_prototype(&mut self, proto: &'ast PrototypeAst, alias: bool) {
-        self.func_table.insert(proto.name.as_str(), &proto);
+        self.func_table.insert(&proto.name, &proto);
         self.var_table.clear();
 
-        write!(self.w, "define double @{}(", if proto.name == "main" { "0" } else { &proto.name }).unwrap();
+        let name = if proto.name == "main" { "0" } else { &proto.name };
 
-        for (i, arg) in proto.args.iter().enumerate() {
-            let reg = self.create_reg();
-            write!(self.w, "double").unwrap();
-            if alias {
-                write!(self.w, " {}", reg).unwrap();
-            }
-            if i < proto.args.len() - 1 {
-                write!(self.w, ", ").unwrap();
-            }
+        let regs: Vec<String> = proto.args.iter().map(|_| self.builder.create_reg()).collect();
+
+        self.builder.def_func(name, &regs, alias);
+
+        assert_eq!(proto.args.len(), regs.len());
+        for (arg, reg) in proto.args.iter().zip(regs) {
             self.var_table.insert(arg, reg);
         }
-
-        write!(self.w, ")").unwrap();
     }
 
     fn codegen_function(&mut self, func: &'ast FunctionAst) -> Result<(), String> {
         self.codegen_prototype(&func.prototype, true);
 
-        writeln!(self.w, " {{").unwrap();
+        self.builder.begin_func_body();
 
-        writeln!(self.w, "entry:").unwrap();
+        self.builder.begin_basic_block("entry");
+        self.prev_lbl = Some("entry".to_string());
 
         let reg = self.codegen_expr(&func.body)?;
-        writeln!(self.w, "\tret double {}", reg).unwrap();
+        self.builder.ret(&reg);
 
-        writeln!(self.w, "}}\n").unwrap();
+        self.builder.end_func_body();
         Ok(())
     }
 
@@ -65,7 +62,7 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
         match ast {
             Ast::Extern(proto) => {
                 self.codegen_prototype(proto, false);
-                writeln!(self.w, "\n").unwrap();
+                self.builder.end_prototype();
                 Ok(())
             },
             Ast::Function(func) => self.codegen_function(func),
@@ -73,14 +70,11 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
         }
     }
 
-    fn create_reg(&mut self) -> String {
-        self.index += 1;
-        format!("%tmp{}", self.index)
-    }
-
-    fn create_label(&mut self, prefix: &str) -> String {
-        self.index += 1;
-        format!("{}{}", prefix, self.index)
+    fn codegen_var(&mut self, var: &str) -> Result<String, String> {
+        match self.var_table.get(var) {
+            None => panic!("Unbound variable reference: '{}'", var),
+            Some(value) => Ok(value.clone()),
+        }
     }
 
     fn codegen_call(&mut self, callee: &str, args: &'ast [ExprAst]) -> Result<String, String> {
@@ -98,16 +92,8 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
             values.push(self.codegen_expr(expr)?);
         }
 
-        let reg = self.create_reg();
-        write!(self.w, "\t{} = call double @{}(", reg, callee).unwrap();
-        for (i, value) in values.iter().enumerate() {
-            write!(self.w, "double {}", value).unwrap();
-            if i < values.len() - 1 {
-                write!(self.w, ", ").unwrap();
-            }
-        }
-        writeln!(self.w, ")").unwrap();
-
+        let reg = self.builder.create_reg();
+        self.builder.call(reg.as_str(), callee, &values);
         Ok(reg)
     }
 
@@ -117,45 +103,45 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
 
         let reg = match ast.op {
             Operator::Add => {
-                let reg = self.create_reg();
-                writeln!(self.w, "\t{} = fadd float {}, {}", reg, lhs, rhs).unwrap();
-                reg
+                let ret = self.builder.create_reg();
+                self.builder.fadd(&ret, &lhs, &rhs);
+                ret
             },
             Operator::Subtract => {
-                let reg = self.create_reg();
-                writeln!(self.w, "\t{} = fsub float {}, {}", reg, lhs, rhs).unwrap();
-                reg
+                let ret = self.builder.create_reg();
+                self.builder.fsub(&ret, &lhs, &rhs);
+                ret
             },
             Operator::Multiply => {
-                let reg = self.create_reg();
-                writeln!(self.w, "\t{} = fmul float {}, {}", reg, lhs, rhs).unwrap();
-                reg
+                let ret = self.builder.create_reg();
+                self.builder.fmul(&ret, &lhs, &rhs);
+                ret
             },
             Operator::Divide => {
-                let reg = self.create_reg();
-                writeln!(self.w, "\t{} = fdiv float {}, {}", reg, lhs, rhs).unwrap();
-                reg
+                let ret = self.builder.create_reg();
+                self.builder.fdiv(&ret, &lhs, &rhs);
+                ret
             },
             Operator::Lt => {
-                let reg1 = self.create_reg();
-                writeln!(self.w, "\t{} = fcmp ult float {}, {}", reg1, lhs, rhs).unwrap();
-                let reg2 = self.create_reg();
-                writeln!(self.w, "\t{} = uitofp <1 x i1> {} to <1 x float>", reg2, reg1).unwrap();
-                reg2
-            }
+                let ret1 = self.builder.create_reg();
+                self.builder.fcmp_ult(&ret1, &lhs, &rhs);
+                let ret2 = self.builder.create_reg();
+                self.builder.uitofp(&ret2, &ret1);
+                ret2
+            },
             Operator::Gt => {
-                let reg1 = self.create_reg();
-                writeln!(self.w, "\t{} = fcmp ugt float {}, {}", reg1, lhs, rhs).unwrap();
-                let reg2 = self.create_reg();
-                writeln!(self.w, "\t{} = uitofp <1 x i1> {} to <1 x float>n", reg2, reg1).unwrap();
-                reg2
-            }
+                let ret1 = self.builder.create_reg();
+                self.builder.fcmp_ugt(&ret1, &lhs, &rhs);
+                let ret2 = self.builder.create_reg();
+                self.builder.uitofp(&ret2, &ret1);
+                ret2
+            },
             Operator::Eq => {
-                let reg1 = self.create_reg();
-                writeln!(self.w, "\t{} = fcmp ueq float {}, {}", reg1, lhs, rhs).unwrap();
-                let reg2 = self.create_reg();
-                writeln!(self.w, "\t{} = uitofp <1 x i1> {} to <1 x float>", reg2, reg1).unwrap();
-                reg2
+                let ret1 = self.builder.create_reg();
+                self.builder.fcmp_ueq(&ret1, &lhs, &rhs);
+                let ret2 = self.builder.create_reg();
+                self.builder.uitofp(&ret2, &ret1);
+                ret2
             }
         };
         Ok(reg)
@@ -164,42 +150,76 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
     fn codegen_if_expr(&mut self, expr: &'ast IfAst) -> Result<String, String> {
         let cond = self.codegen_expr(&expr.cond)?;
 
-        let then_bb = self.create_label("then");
-        let other_bb = self.create_label("else");
-        let end_bb = self.create_label("end");
+        let then_lbl = self.builder.create_label("then");
+        let other_lbl = self.builder.create_label("else");
+        let end_lbl = self.builder.create_label("end");
 
-        // decide which basic block we need to branch to
-        writeln!(self.w, "\tbr i1 {}, label %{}, label %{}", cond, then_bb, other_bb).unwrap();
+        self.builder.cond_branch(&cond, &then_lbl, &other_lbl);
 
-        // create the then basic block
-        writeln!(self.w, "{}:", then_bb).unwrap();
+        self.builder.begin_basic_block(&then_lbl);
         let then = self.codegen_expr(&expr.then)?;
-        writeln!(self.w, "\tbr label %{}", end_bb).unwrap();
+        self.builder.branch(&end_lbl);
 
-        // create the else basic block
-        writeln!(self.w, "{}:", other_bb).unwrap();
+        self.builder.begin_basic_block(&other_lbl);
         let otherwise = self.codegen_expr(&expr.otherwise)?;
-        writeln!(self.w, "\tbr label %{}", end_bb).unwrap();
+        self.builder.branch(&end_lbl);
 
-        // create the end basic block, and get the "result" value
-        writeln!(self.w, "{}:", end_bb).unwrap();
-        let reg = self.create_reg();
-        writeln!(self.w, "\t{} = phi float [{}, %{}], [{}, %{}]", reg, then, then_bb, otherwise, other_bb).unwrap();
+        self.builder.begin_basic_block(&end_lbl);
+        let reg = self.builder.create_reg();
+        self.builder.phi(&reg, &then, &then_lbl, &otherwise, &other_lbl);
+
+        self.prev_lbl = Some(end_lbl);
 
         Ok(reg)
+    }
+
+    fn codegen_for_expr(&mut self, ast: &'ast ForAst) -> Result<String, String> {
+        let beg = self.codegen_expr(&ast.beg)?;
+        let end = self.codegen_expr(&ast.end)?;
+
+        let count_reg = self.builder.create_reg();
+        let next_reg = self.builder.create_reg();
+
+        let loop_lbl = self.builder.create_label("loop");
+        let end_lbl = self.builder.create_label("end");
+
+        self.builder.branch(&loop_lbl);
+
+        let begin_lbl = self.prev_lbl.as_ref().unwrap(); // we SHOULD be inside a basic block, so this should not be None
+
+        self.builder.begin_basic_block(&loop_lbl);
+        self.builder.phi(&count_reg, &beg, &begin_lbl, &next_reg, &loop_lbl);
+
+        self.var_table.insert(&ast.var, count_reg.clone()); // we need to capture the counter variable as a loop variable
+        self.codegen_expr(&ast.body)?; // discord the return value for non errors.
+
+        self.builder.fadd(&next_reg, &count_reg, &1.to_string());
+
+        let cmp_reg = self.builder.create_reg();
+        let cast_reg = self.builder.create_reg();
+        self.builder.fcmp_ueq(&cmp_reg, &next_reg, &end);
+        self.builder.uitofp(&cast_reg, &cmp_reg);
+
+        self.builder.cond_branch(&cast_reg, &loop_lbl, &end_lbl);
+
+        self.builder.begin_basic_block(&end_lbl);
+
+        self.var_table.remove(ast.var.as_str()); // ok, we can remove the counter variable at the end of the loop
+
+        self.prev_lbl = Some(end_lbl);
+
+        Ok(0.to_string())
     }
 
     // an expression evaluates to a string that is either a literal or a register
     fn codegen_expr(&mut self, expr: &'ast ExprAst) -> Result<String, String> {
         match expr {
             ExprAst::Number(num) => Ok(num.to_string()),
-            ExprAst::Variable(var) => match self.var_table.get(var.as_str()) {
-                None => panic!("Unbound variable reference: '{}'", var),
-                Some(value) => Ok(value.clone()),
-            }
+            ExprAst::Variable(var) => self.codegen_var(&var),
             ExprAst::Binary(ast) => self.codegen_bin_expr(ast.as_ref()),
-            ExprAst::Call { callee, args } => self.codegen_call(callee, args),
+            ExprAst::Call{ callee, args } => self.codegen_call(callee, args),
             ExprAst::If(ast) => self.codegen_if_expr(ast.as_ref()),
+            ExprAst::For(ast) => self.codegen_for_expr(ast.as_ref()),
             ExprAst::Err(err) => panic!("Fatal: encountered error node in codegen phase {}", err),
         }
     }
@@ -207,6 +227,7 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
 
 mod test {
     use std::io::{BufReader, Cursor};
+    use crate::builder::IRBuilder;
     use crate::codegen::CodegenCtx;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
@@ -228,7 +249,7 @@ mod test {
 
         let mut output = String::new();
 
-        let mut codegen = CodegenCtx::new(&mut output);
+        let mut codegen = CodegenCtx::new(IRBuilder::new(&mut output));
         codegen.codegen(&asts).unwrap();
 
         println!("{}", output);
@@ -237,7 +258,13 @@ mod test {
     #[test]
     pub fn test_compile_cond() {
         let input = r"
+            extern puts(str)
+
             def cond(a b) if (a = b) then (if (b < 10) then (a + b + 10) else 10) else (b + 50 * 2)
+
+            def loop(x)
+                for i in 0 to x:
+                    puts(i)
 
             def main() cond(10, 50)
         ";
@@ -247,7 +274,7 @@ mod test {
 
         let mut output = String::new();
 
-        let mut codegen = CodegenCtx::new(&mut output);
+        let mut codegen = CodegenCtx::new(IRBuilder::new(&mut output));
         codegen.codegen(&asts).unwrap();
 
         println!("{}", output);

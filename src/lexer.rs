@@ -17,20 +17,47 @@ pub enum Token {
     Gt,
     Eq,
     Comma,
+    Colon,
     If,
     Then,
     Else,
     For,
+    In,
+    To,
     Iden(String),
     Number(f64),
     Eof
 }
 
+impl Token {
+    pub(crate) fn is_reserved(&self) -> bool {
+        match self {
+            | Token::Def
+            | Token::Extern
+            | Token::Comma
+            | Token::Then
+            | Token::Else
+            | Token::For
+            | Token::In
+            | Token::To
+            | Token::Colon
+            | Token::Eof => true,
+            _ => false
+        }
+    }
+}
+
 impl Debug for Token {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
        match self {
-           Token::Def => write!(f, "{}", "def"),
-           Token::Extern => write!(f, "{}", "extern"),
+           Token::Def => write!(f, "{}", "`def`"),
+           Token::Extern => write!(f, "{}", "`extern`"),
+           Token::To => write!(f, "{}", "`to`"),
+           Token::In => write!(f, "{}", "`in`"),
+           Token::If => write!(f, "{}", "`if`"),
+           Token::Then => write!(f, "{}", "`then`"),
+           Token::Else => write!(f, "{}", "`else`"),
+           Token::For => write!(f, "{}", "`for`"),
            Token::LParen => write!(f, "{}", "'('"),
            Token::RParen => write!(f, "{}", "')'"),
            Token::Plus => write!(f, "{}", "'+'"),
@@ -43,10 +70,7 @@ impl Debug for Token {
            Token::Gt => write!(f, "{}", "'>'"),
            Token::Eq => write!(f, "{}", "'='"),
            Token::Comma => write!(f, "{}", "','"),
-           Token::If => write!(f, "{}", "'if"),
-           Token::Then => write!(f, "{}", "then"),
-           Token::Else => write!(f, "{}", "else"),
-           Token::For => write!(f, "{}", "for"),
+           Token::Colon => write!(f, "{}", "':'"),
            Token::Iden(_) => write!(f, "{}", "<iden>"),
            Token::Number(num) => write!(f, "{}", num),
            Token::Eof => write!(f, "{}", "<eof>")
@@ -107,6 +131,8 @@ impl<R: BufRead> Lexer<R> {
             "then" => Token::Then,
             "else" => Token::Else,
             "for" => Token::For,
+            "to" => Token::To,
+            "in" => Token::In,
             _ => Token::Iden(iden_str)
         }
     }
@@ -121,7 +147,7 @@ impl<R: BufRead> Lexer<R> {
             self.strbuf.push(ch);
             self.consume_char();
         }
-        let num: f64 = self.strbuf.parse().unwrap();
+        let num: f64 = self.strbuf.parse().expect(&format!("Fatal: error parsing invalid number {}", self.strbuf));
         Token::Number(num)
     }
 
@@ -173,6 +199,7 @@ impl<R: BufRead> Lexer<R> {
             },
             '=' => Token::Eq,
             ',' => Token::Comma,
+            ':' => Token::Colon,
             '\0' => Token::Eof,
             ch => panic!("Invalid or unknown character: '{}'", ch),
         }
@@ -227,6 +254,7 @@ mod test {
     fn test_basic() {
         let input = r"
             extern atan()
+            extern printf(str)
 
             # Compute the x'th fibonacci number.
             def fib(x)
@@ -234,6 +262,10 @@ mod test {
                 1
               else
                 fib(x-1)+fib(x-2)
+
+            def printLoop(x)
+              for i in 0 to 10:
+                printf(str)
 
             # This expression will compute the 40th number.
             fib(40)
@@ -244,22 +276,20 @@ mod test {
 
         let expected_tokens = [
             Extern, Iden("atan".to_string()), LParen, RParen,
+
+            Extern, Iden("printf".to_string()), LParen, Iden("str".to_string()), RParen,
+
             Def, Iden("fib".to_string()), LParen, Iden("x".to_string()), RParen, If,
             Number(3.0), Leq, Iden("x".to_string()), Then, Number(1.0), Else,
             Iden("fib".to_string()), LParen, Iden("x".to_string()), Minus, Number(1.0), RParen, Plus, Iden("fib".to_string()),
-            LParen, Iden("x".to_string()), Minus, Number(2.0), RParen, Iden("fib".to_string()), LParen, Number(40.0), RParen
+            LParen, Iden("x".to_string()), Minus, Number(2.0), RParen,
+
+            Def, Iden("printLoop".to_string()), LParen, Iden("x".to_string()), RParen,
+            For, Iden("i".to_string()), In, Number(0.0), To, Number(10.0), Colon,
+            Iden("printf".to_string()), LParen, Iden("str".to_string()), RParen,
+
+            Iden("fib".to_string()), LParen, Number(40.0), RParen
         ];
         assert_eq!(tokens, expected_tokens);
-    }
-
-    #[test]
-    fn test_single_line() {
-        let input = r"
-            def foo(a b) a*a + 2*a*b + b*b
-        ";
-
-        let reader = BufReader::new(Cursor::new(input));
-        let tokens = Lexer::new(reader).read_tokens();
-        println!("{:?}", tokens);
     }
 }
