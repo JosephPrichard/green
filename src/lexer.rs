@@ -11,26 +11,39 @@ pub enum Token {
     Minus,
     Times,
     Slash,
+    DoubleTimes,
+    And,
+    Or,
+    Xor,
     Leq,
     Geq,
     Lt,
     Gt,
     Eq,
     Comma,
-    Colon,
+    Semicolon,
+    Assign,
+    AssignPlus,
+    AssignMinus,
+    AssignTimes,
+    AssignSlash,
     If,
     Then,
     Else,
     For,
+    While,
+    Var,
     In,
     To,
+    End,
+    Do,
     Iden(String),
     Number(f64),
     Eof
 }
 
 impl Token {
-    pub(crate) fn is_reserved(&self) -> bool {
+    pub fn is_terminator(&self) -> bool {
         match self {
             | Token::Def
             | Token::Extern
@@ -40,7 +53,8 @@ impl Token {
             | Token::For
             | Token::In
             | Token::To
-            | Token::Colon
+            | Token::End
+            | Token::Do
             | Token::Eof => true,
             _ => false
         }
@@ -58,19 +72,32 @@ impl Debug for Token {
            Token::Then => write!(f, "{}", "`then`"),
            Token::Else => write!(f, "{}", "`else`"),
            Token::For => write!(f, "{}", "`for`"),
+           Token::While => write!(f, "{}", "`while`"),
+           Token::Var => write!(f, "{}", "`var`"),
+           Token::End => write!(f, "{}", "`end`"),
+           Token::Do => write!(f, "{}", "`do`"),
            Token::LParen => write!(f, "{}", "'('"),
            Token::RParen => write!(f, "{}", "')'"),
            Token::Plus => write!(f, "{}", "'+'"),
            Token::Minus => write!(f, "{}", "'-'"),
            Token::Times => write!(f, "{}", "'*'"),
            Token::Slash => write!(f, "{}", "'/'"),
+           Token::DoubleTimes => write!(f, "{}", "'**'"),
+           Token::And => write!(f, "{}", "`and`"),
+           Token::Or => write!(f, "{}", "`or`"),
+           Token::Xor => write!(f, "{}", "`xor`"),
            Token::Leq => write!(f, "{}", "'<='"),
            Token::Geq => write!(f, "{}", "'>='"),
            Token::Lt => write!(f, "{}", "'<'"),
            Token::Gt => write!(f, "{}", "'>'"),
-           Token::Eq => write!(f, "{}", "'='"),
+           Token::Eq => write!(f, "{}", "'=='"),
+           Token::Assign => write!(f, "{}", "'='"),
+           Token::AssignPlus => write!(f, "{}", "'+='"),
+           Token::AssignMinus => write!(f, "{}", "'-='"),
+           Token::AssignTimes => write!(f, "{}", "'*='"),
+           Token::AssignSlash => write!(f, "{}", "'/='"),
            Token::Comma => write!(f, "{}", "','"),
-           Token::Colon => write!(f, "{}", "':'"),
+           Token::Semicolon => write!(f, "{}", "';'"),
            Token::Iden(_) => write!(f, "{}", "<iden>"),
            Token::Number(num) => write!(f, "{}", num),
            Token::Eof => write!(f, "{}", "<eof>")
@@ -114,17 +141,17 @@ impl<R: BufRead> Lexer<R> {
         self.reader.consume(1)
     }
 
-    fn read_iden(&mut self) -> Token {
-        let mut iden_str = String::new();
+    fn read_text(&mut self) -> Token {
+        self.strbuf.clear();
         loop {
             let ch = self.peek_char();
             if ch == '\0' || (!ch.is_alphanumeric() && ch != '_') {
                 break
             }
-            iden_str.push(ch);
+            self.strbuf.push(ch);
             self.consume_char();
         }
-        match iden_str.as_str() {
+        match self.strbuf.as_str() {
             "def" => Token::Def,
             "extern" => Token::Extern,
             "if" => Token::If,
@@ -133,7 +160,14 @@ impl<R: BufRead> Lexer<R> {
             "for" => Token::For,
             "to" => Token::To,
             "in" => Token::In,
-            _ => Token::Iden(iden_str)
+            "while" => Token::While,
+            "var" => Token::Var,
+            "end" => Token::End,
+            "do" => Token::Do,
+            "and" => Token::And,
+            "or" => Token::Or,
+            "xor" => Token::Xor,
+            _ => Token::Iden(self.strbuf.clone())
         }
     }
 
@@ -166,43 +200,47 @@ impl<R: BufRead> Lexer<R> {
     }
 
     fn read_misc_token(&mut self) -> Token {
+        // try to handle single length characters first
         match self.read_char() {
             '(' => Token::LParen,
             ')' => Token::RParen,
-            '+' => Token::Plus,
-            '-' => Token::Minus,
-            '*' => Token::Times,
-            '/' => Token::Slash,
-            '<' => {
-                let ch = self.peek_char();
-                if ch == '\0' {
-                    return Token::Eof
-                }
-                if ch == '=' {
-                    self.consume_char();
-                    Token::Leq
-                } else {
-                    Token::Lt
-                }
-            },
-            '>' => {
-                let ch = self.peek_char();
-                if ch == '\0' {
-                    return Token::Eof
-                }
-                if ch == '=' {
-                    self.consume_char();
-                    Token::Geq
-                } else {
-                    Token::Gt
-                }
-            },
-            '=' => Token::Eq,
             ',' => Token::Comma,
-            ':' => Token::Colon,
+            ';' => Token::Semicolon,
             '\0' => Token::Eof,
-            ch => panic!("Invalid or unknown character: '{}'", ch),
+            // otherwise, consider if the character is multi-length
+            ch => {
+                self.strbuf.clear();
+                self.strbuf.push(ch);
+                loop {
+                    let ch = self.peek_char();
+                    if ch == '\0' || ch.is_alphanumeric() || ch.is_whitespace() {
+                        break
+                    }
+                    self.strbuf.push(ch);
+                    self.consume_char();
+                }
+                match self.strbuf.as_str() {
+                    "+" => Token::Plus,
+                    "-" => Token::Minus,
+                    "*" => Token::Times,
+                    "/" => Token::Slash,
+                    "**" => Token::DoubleTimes,
+                    "<=" => Token::Leq,
+                    "<" => Token::Lt,
+                    ">=" => Token::Geq,
+                    ">" => Token::Gt,
+                    "==" => Token::Eq,
+                    "=" => Token::Assign,
+                    "+=" => Token::AssignPlus,
+                    "-=" => Token::AssignMinus,
+                    "*=" => Token::AssignTimes,
+                    "/=" => Token::AssignTimes,
+                    // the character isn't even multi-length - it is invalid
+                    other => panic!("Invalid or unknown character: '{}'", other),
+                }
+            }
         }
+
     }
 
     pub fn read_token(&mut self) -> Token {
@@ -218,7 +256,7 @@ impl<R: BufRead> Lexer<R> {
 
         let ch = self.peek_char();
         if ch.is_alphabetic() {
-            self.read_iden()
+            self.read_text()
         } else if ch.is_digit(10) || ch == '.' {
             self.read_number()
         } else if ch == '#' {
@@ -257,15 +295,18 @@ mod test {
             extern printf(str)
 
             # Compute the x'th fibonacci number.
-            def fib(x)
+            def fib(x) do
               if 3 <= x then
                 1
               else
                 fib(x-1)+fib(x-2)
+            end
 
-            def printLoop(x)
-              for i in 0 to 10:
+            def printLoop(x) do
+              for i in 0 to 10 do
                 printf(str)
+              end
+            end
 
             # This expression will compute the 40th number.
             fib(40)
@@ -279,14 +320,14 @@ mod test {
 
             Extern, Iden("printf".to_string()), LParen, Iden("str".to_string()), RParen,
 
-            Def, Iden("fib".to_string()), LParen, Iden("x".to_string()), RParen, If,
+            Def, Iden("fib".to_string()), LParen, Iden("x".to_string()), RParen, Do, If,
             Number(3.0), Leq, Iden("x".to_string()), Then, Number(1.0), Else,
             Iden("fib".to_string()), LParen, Iden("x".to_string()), Minus, Number(1.0), RParen, Plus, Iden("fib".to_string()),
-            LParen, Iden("x".to_string()), Minus, Number(2.0), RParen,
+            LParen, Iden("x".to_string()), Minus, Number(2.0), RParen, End,
 
-            Def, Iden("printLoop".to_string()), LParen, Iden("x".to_string()), RParen,
-            For, Iden("i".to_string()), In, Number(0.0), To, Number(10.0), Colon,
-            Iden("printf".to_string()), LParen, Iden("str".to_string()), RParen,
+            Def, Iden("printLoop".to_string()), LParen, Iden("x".to_string()), RParen, Do,
+            For, Iden("i".to_string()), In, Number(0.0), To, Number(10.0), Do,
+            Iden("printf".to_string()), LParen, Iden("str".to_string()), RParen, End, End,
 
             Iden("fib".to_string()), LParen, Number(40.0), RParen
         ];

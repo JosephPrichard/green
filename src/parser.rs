@@ -54,6 +54,18 @@ impl IfAst {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct WhileAst {
+    pub cond: ExprAst,
+    pub body: ExprAst,
+}
+
+impl WhileAst {
+    pub fn new(cond: ExprAst, body: ExprAst) -> ExprAst {
+        ExprAst::While(Box::new(WhileAst { cond, body, }))
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct ForAst {
     pub var: String,
     pub beg: ExprAst,
@@ -72,11 +84,9 @@ pub enum ExprAst {
     Number(f64),
     Variable(String),
     Binary(Box<BinaryAst>),
-    Call {
-        callee: String,
-        args: Box<[ExprAst]>,
-    },
+    Call{ callee: String, args: Box<[ExprAst]>, },
     If(Box<IfAst>),
+    While(Box<WhileAst>),
     For(Box<ForAst>),
     Err(String)
 }
@@ -195,13 +205,9 @@ impl<R: BufRead> Parser<R> {
 
     fn parse_if_expr(&mut self) -> ExprAst {
         let cond_expr = self.parse_expr(0);
-
         self.expect_token(Token::Then);
-
         let then_expr = self.parse_expr(0);
-
         self.expect_token(Token::Else);
-
         let otherwise_expr = self.parse_expr(0);
 
         ExprAst::If(Box::new(IfAst { cond: cond_expr, then: then_expr, otherwise: otherwise_expr, }))
@@ -215,18 +221,23 @@ impl<R: BufRead> Parser<R> {
         };
 
         self.expect_token(Token::In);
-
         let beg_expr = self.parse_expr(0);
-
         self.expect_token(Token::To);
-
         let end_expr = self.parse_expr(0);
-
-        self.expect_token(Token::Colon);
-
+        self.expect_token(Token::Do);
         let body_expr = self.parse_expr(0);
+        self.expect_token(Token::End);
 
-        ExprAst::For(Box::new(ForAst { var: var_iden, beg: beg_expr, end: end_expr, body: body_expr }))
+        ExprAst::For(Box::new(ForAst { var: var_iden, beg: beg_expr, end: end_expr, body: body_expr, }))
+    }
+
+    fn parse_while_expr(&mut self) -> ExprAst {
+        let cond_expr = self.parse_expr(0);
+        self.expect_token(Token::Do);
+        let body_expr = self.parse_expr(0);
+        self.expect_token(Token::End);
+
+        ExprAst::While(Box::new(WhileAst { cond: cond_expr, body: body_expr, }))
     }
 
     fn parse_binop_lhs(&mut self, depth: u32) -> ExprAst {
@@ -237,6 +248,7 @@ impl<R: BufRead> Parser<R> {
             Token::Iden(iden) => self.parse_iden_expr(iden),
             Token::If => self.parse_if_expr(),
             Token::For => self.parse_for_expr(),
+            Token::While => self.parse_while_expr(),
             token => panic!("Expected an <iden>, numeric, or '(' token at the start of an expression, got {:?}", token),
         }
     }
@@ -244,15 +256,14 @@ impl<R: BufRead> Parser<R> {
     fn parse_binop_rhs(&mut self, lhs: ExprAst, curr_op: Operator, depth: u32) -> ExprAst {
         let expr = self.parse_binop_lhs(depth);
 
-        let token = self.peek_token();
-        match token {
+        match self.peek_token() {
             Token::RParen => {
                 if depth != 0 { // only consume inside a nested subexpression
                     self.consume_token();
                 }
                 BinaryAst::new(curr_op, lhs, expr)
             },
-            _ if token.is_reserved() => {
+            token if token.is_terminator() => {
                 if depth == 0 {
                     BinaryAst::new(curr_op, lhs, expr)
                 } else {
@@ -276,15 +287,14 @@ impl<R: BufRead> Parser<R> {
     fn parse_expr(&mut self, depth: u32) -> ExprAst {
         let expr = self.parse_binop_lhs(depth);
 
-        let token = self.peek_token();
-        match token {
+        match self.peek_token() {
             Token::RParen => {
                 if depth != 0 { // only consume inside a nested subexpression
                     self.consume_token();
                 }
                 expr
             },
-            _ if token.is_reserved() => expr,
+            token if token.is_terminator() => expr,
             _ => {
                 let op = self.parse_operator();
                 self.parse_binop_rhs(expr, op, depth)
@@ -299,16 +309,28 @@ impl<R: BufRead> Parser<R> {
             let token = self.read_token();
             let node = match token {
                 Token::Extern => Ast::Extern(self.parse_prototype()),
-                Token::Def => {
-                    let prototype = self.parse_prototype();
-                    let body = self.parse_expr(0);
-                    Ast::Function(FunctionAst { prototype, body, })
-                },
+                Token::Def => Ast::Function(self.parse_function()),
                 Token::Eof => return nodes,
                 token => panic!("Expected a declaration to be either an `extern` or a `def`, got {:?}", token),
             };
             nodes.push(node);
         }
+    }
+
+    fn parse_function(&mut self) -> FunctionAst {
+        let prototype = self.parse_prototype();
+
+        let token = self.peek_token();
+        let body = match token {
+            Token::Do => {
+                self.consume_token();
+                let body = self.parse_expr(0);
+                self.expect_token(Token::End);
+                body
+            },
+            _ => self.parse_expr(0)
+        };
+        FunctionAst { prototype, body, }
     }
 
     fn parse_prototype(&mut self) -> PrototypeAst {
@@ -338,9 +360,9 @@ mod test {
     use std::io::{BufReader, Cursor};
     use crate::lexer::Lexer;
     use crate::parser::ExprAst::{Call, Number, Variable};
-    use crate::parser::{BinaryAst, ExprAst, ForAst, FunctionAst, IfAst, Parser, PrototypeAst};
+    use crate::parser::{BinaryAst, ExprAst, ForAst, FunctionAst, IfAst, Parser, PrototypeAst, WhileAst};
     use crate::parser::Ast::{Extern, Function};
-    use crate::parser::Operator::{Add, Divide, Eq, Multiply, Subtract};
+    use crate::parser::Operator::{Add, Divide, Eq, Lt, Multiply, Subtract};
 
     #[test]
     pub fn test_nested_functions() {
@@ -351,7 +373,9 @@ mod test {
             def pickLeft(x y) x
 
             # Pick the middle one
-            def pickMiddle(x y z) pickLeft(pickLeft(y, z), z)
+            def pickMiddle(x y z) do
+                pickLeft(pickLeft(y, z), z)
+            end
         ";
 
         let reader = BufReader::new(Cursor::new(input));
@@ -391,7 +415,7 @@ mod test {
 
             def calculate2(a b c d) a + b + c * d
 
-            def calculate3(a b c d) a + b * c + d
+            def calculate3(a b c d) do a + b * c + d end
 
             def calculate4(a b c d) a * b - c * d
 
@@ -490,13 +514,21 @@ mod test {
     #[test]
     pub fn test_cond_exprs() {
         let input = r"
-            def cond(a b) if a = b then a + 1 else b - 1
+            def cond(a b) if a == b then a + 1 else b - 1
 
-            def cond1(a b c) if a = b then (if b = c then a else b) else c
+            def cond1(a b c) if a == b then (if b == c then a else b) else c
 
-            def loop(x)
-                for i in 0 to x:
+            def loop1(x) do
+                for i in 0 to x do
                     puts(i)
+                end
+            end
+
+            def loop2(a b) do
+                while a < b do
+                    puts(a)
+                end
+            end
         ";
 
         let reader = BufReader::new(Cursor::new(input));
@@ -545,12 +577,23 @@ mod test {
                 )
             }),
             Function(FunctionAst {
-                prototype: PrototypeAst::of("loop", &vec!["x"]),
+                prototype: PrototypeAst::of("loop1", &vec!["x"]),
                 body: ForAst::new(
                     "i".to_string(),
                     Number(0.0),
                     ExprAst::variable("x"),
                     ExprAst::call("puts", vec![ExprAst::variable("i")]),
+                )
+            }),
+            Function(FunctionAst {
+                prototype: PrototypeAst::of("loop2", &vec!["a", "b"]),
+                body: WhileAst::new(
+                    BinaryAst::new(
+                        Lt,
+                        ExprAst::variable("a"),
+                        ExprAst::variable("b")
+                    ),
+                    ExprAst::call("puts", vec![ExprAst::variable("a")]),
                 )
             })
         ];

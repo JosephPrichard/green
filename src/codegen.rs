@@ -173,6 +173,22 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
         Ok(reg)
     }
 
+    // fn codegen_while_expr(&mut self, ast: &'ast ForAst) -> Result<String, String> {
+    //     let loop_lbl = self.builder.create_label("loop");
+    //     let end_lbl = self.builder.create_label("end");
+    // 
+    //     self.builder.branch(&loop_lbl);
+    //
+    //     let begin_lbl = self.prev_lbl.as_ref().unwrap(); // we SHOULD be inside a basic block, so this should not be None
+    //
+    //     self.builder.begin_basic_block(&loop_lbl);
+    //     self.builder.phi(&count_reg, &beg, &begin_lbl, &next_reg, &loop_lbl);
+    //
+    //     self.prev_lbl = Some(end_lbl);
+    //
+    //     Ok(0.to_string())
+    // }
+
     fn codegen_for_expr(&mut self, ast: &'ast ForAst) -> Result<String, String> {
         let beg = self.codegen_expr(&ast.beg)?;
         let end = self.codegen_expr(&ast.end)?;
@@ -221,6 +237,7 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
             ExprAst::If(ast) => self.codegen_if_expr(ast.as_ref()),
             ExprAst::For(ast) => self.codegen_for_expr(ast.as_ref()),
             ExprAst::Err(err) => panic!("Fatal: encountered error node in codegen phase {}", err),
+            _ => panic!("Fatal: unknown expr type")
         }
     }
 }
@@ -260,7 +277,7 @@ mod test {
         let input = r"
             extern puts(str)
 
-            def cond(a b) if (a = b) then (if (b < 10) then (a + b + 10) else 10) else (b + 50 * 2)
+            def cond(a b) if (a == b) then (if (b < 10) then (a + b + 10) else 10) else (b + 50 * 2)
 
             def loop(x)
                 for i in 0 to x:
