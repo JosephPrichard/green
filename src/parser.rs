@@ -10,19 +10,30 @@ pub enum Operator {
     Divide,
     Lt,
     Gt,
+    Leq,
+    Geq,
     Eq,
+    And,
+    Or,
+    Xor,
 }
 
 impl Operator {
     fn precedence(&self) -> u32 {
+        // higher precedence means node floats to bottom of tree
         match self {
-            Operator::Add => 1,
-            Operator::Subtract => 1,
-            Operator::Multiply => 2,
-            Operator::Divide => 2,
-            Operator::Lt => 3,
-            Operator::Gt => 3,
-            Operator::Eq => 4,
+            Operator::And => 10,
+            Operator::Or => 10,
+            Operator::Xor => 10,
+            Operator::Lt => 20,
+            Operator::Gt => 20,
+            Operator::Leq => 20,
+            Operator::Geq => 20,
+            Operator::Eq => 20,
+            Operator::Add => 30,
+            Operator::Subtract => 30,
+            Operator::Multiply => 40,
+            Operator::Divide => 40,
         }
     }
 }
@@ -198,7 +209,12 @@ impl<R: BufRead> Parser<R> {
             Token::Slash => Operator::Divide,
             Token::Gt => Operator::Gt,
             Token::Lt => Operator::Lt,
+            Token::Leq => Operator::Leq,
+            Token::Geq => Operator::Geq,
             Token::Eq => Operator::Eq,
+            Token::And => Operator::And,
+            Token::Or => Operator::Or,
+            Token::Xor => Operator::Xor,
             token => panic!("Expected an operator, got {:?}", token),
         }
     }
@@ -272,8 +288,9 @@ impl<R: BufRead> Parser<R> {
             },
             _ => {
                 let next_op = self.parse_operator();
-
+                
                 if next_op.precedence() > curr_op.precedence() {
+                    // if next is higher precedence, keep parsing forward
                     let rhs = self.parse_binop_rhs(expr, next_op, depth);
                     BinaryAst::new(curr_op, lhs, rhs)
                 } else {
@@ -362,7 +379,7 @@ mod test {
     use crate::parser::ExprAst::{Call, Number, Variable};
     use crate::parser::{BinaryAst, ExprAst, ForAst, FunctionAst, IfAst, Parser, PrototypeAst, WhileAst};
     use crate::parser::Ast::{Extern, Function};
-    use crate::parser::Operator::{Add, Divide, Eq, Lt, Multiply, Subtract};
+    use crate::parser::Operator::{Add, And, Divide, Eq, Geq, Lt, Multiply, Subtract};
 
     #[test]
     pub fn test_nested_functions() {
@@ -411,19 +428,21 @@ mod test {
     #[test]
     pub fn test_binop_exprs() {
         let input = r"
-            def calculate1(a b c d) a * b * c + d
+            # def calculate1(a b c d) a * b * c + d
 
-            def calculate2(a b c d) a + b + c * d
+            # def calculate2(a b c d) a + b + c * d
 
-            def calculate3(a b c d) do a + b * c + d end
+            # def calculate3(a b c d) do a + b * c + d end
 
-            def calculate4(a b c d) a * b - c * d
+            # def calculate4(a b c d) a * b - c * d
 
-            def calculate5(a b) (a - b)
+            # def calculate5(a b) (a - b)
 
-            def calculate6(a b c d) (a - b) * (c + d) + a + b
+            # def calculate6(a b c d) (a - b) * (c + d) + a + b
 
-            def calculate7(a b c d) (a + (b * (c - d + a)))
+            # def calculate7(a b c d) (a + (b * (c - d + a)))
+            
+            def calculate8(a b c d) a + b < c - d and a >= c
         ";
 
         let reader = BufReader::new(Cursor::new(input));
@@ -431,80 +450,100 @@ mod test {
         println!("{:?}", asts);
 
         let expected_ast = [
+            // // a * b * c + d
+            // Function(FunctionAst {
+            //     prototype: PrototypeAst::of("calculate1", &["a", "b", "c", "d"]),
+            //     body: BinaryAst::new(
+            //         Add,
+            //         BinaryAst::new(
+            //             Multiply,
+            //             BinaryAst::new(Multiply, ExprAst::variable("a"), ExprAst::variable("b")),
+            //             ExprAst::variable("c")
+            //         ),
+            //         ExprAst::variable("d")
+            //     )
+            // }),
+            // // a + b + c * d
+            // Function(FunctionAst {
+            //     prototype: PrototypeAst::of("calculate2", &["a", "b", "c", "d"]),
+            //     body: BinaryAst::new(
+            //         Add,
+            //         BinaryAst::new(Add, ExprAst::variable("a"), ExprAst::variable("b")),
+            //         BinaryAst::new(Multiply, ExprAst::variable("c"), ExprAst::variable("d"))
+            //     )
+            // }),
+            // // a + b * c + d
+            // Function(FunctionAst {
+            //     prototype: PrototypeAst::of("calculate3", &["a", "b", "c", "d"]),
+            //     body: BinaryAst::new(
+            //         Add,
+            //         ExprAst::variable("a"),
+            //         BinaryAst::new(
+            //             Add,
+            //             BinaryAst::new(Multiply, ExprAst::variable("b"), ExprAst::variable("c")),
+            //             ExprAst::variable("d")
+            //         )
+            //     )
+            // }),
+            // // a * b - c * d
+            // Function(FunctionAst {
+            //     prototype: PrototypeAst::of("calculate4", &["a", "b", "c", "d"]),
+            //     body: BinaryAst::new(
+            //         Subtract,
+            //         BinaryAst::new(Multiply, ExprAst::variable("a"), ExprAst::variable("b")),
+            //         BinaryAst::new(Multiply, ExprAst::variable("c"), ExprAst::variable("d"))
+            //     )
+            // }),
+            // // (a - b)
+            // Function(FunctionAst {
+            //     prototype: PrototypeAst::of("calculate5", &["a", "b"]),
+            //     body: BinaryAst::new(Subtract, Variable("a".to_string()), Variable("b".to_string()))
+            // }),
+            // // (a - b) * (c + d) + a + b
+            // Function(FunctionAst {
+            //     prototype: PrototypeAst::of("calculate6", &["a", "b", "c", "d"]),
+            //     body: BinaryAst::new(
+            //         Add,
+            //         BinaryAst::new(
+            //             Add,
+            //             BinaryAst::new(
+            //                 Multiply,
+            //                 BinaryAst::new(Subtract, ExprAst::variable("a"),  ExprAst::variable("b")),
+            //                 BinaryAst::new(Add, ExprAst::variable("c"),  ExprAst::variable("d"))
+            //             ),
+            //             ExprAst::variable("a")
+            //         ),
+            //         ExprAst::variable("b")
+            //     )
+            // }),
+            // // (a + (b * (c - d + a)))
+            // Function(FunctionAst {
+            //     prototype: PrototypeAst::of("calculate7", &["a", "b", "c", "d"]),
+            //     body: BinaryAst::new(
+            //         Add,
+            //         ExprAst::variable("a"),
+            //         BinaryAst::new(
+            //             Multiply,
+            //             ExprAst::variable("b"),
+            //             BinaryAst::new(
+            //                 Add,
+            //                 BinaryAst::new(Subtract, ExprAst::variable("c"), ExprAst::variable("d")),
+            //                 ExprAst::variable("a")
+            //             )
+            //         )
+            //     )
+            // }),
+            // a + b < c - d and a >= c
             Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate1", &["a", "b", "c", "d"]),
+                prototype: PrototypeAst::of("calculate8", &["a", "b", "c", "d"]),
                 body: BinaryAst::new(
-                    Add,
+                    And,
                     BinaryAst::new(
-                        Multiply,
-                        BinaryAst::new(Multiply, ExprAst::variable("a"), ExprAst::variable("b")),
-                        ExprAst::variable("c")
+                        Lt,
+                        BinaryAst::new(Add, ExprAst::variable("a"), ExprAst::variable("b")),
+                        BinaryAst::new(Subtract, ExprAst::variable("c"), ExprAst::variable("d"))
                     ),
-                    ExprAst::variable("d")
-                )
-            }),
-            Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate2", &["a", "b", "c", "d"]),
-                body: BinaryAst::new(
-                    Add,
-                    BinaryAst::new(Add, ExprAst::variable("a"), ExprAst::variable("b")),
-                    BinaryAst::new(Multiply, ExprAst::variable("c"), ExprAst::variable("d"))
-                )
-            }),
-            Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate3", &["a", "b", "c", "d"]),
-                body: BinaryAst::new(
-                    Add,
-                    ExprAst::variable("a"),
-                    BinaryAst::new(
-                        Add,
-                        BinaryAst::new(Multiply, ExprAst::variable("b"), ExprAst::variable("c")),
-                        ExprAst::variable("d")
-                    )
-                )
-            }),
-            Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate4", &["a", "b", "c", "d"]),
-                body: BinaryAst::new(
-                    Subtract,
-                    BinaryAst::new(Multiply, ExprAst::variable("a"), ExprAst::variable("b")),
-                    BinaryAst::new(Multiply, ExprAst::variable("c"), ExprAst::variable("d"))
-                )
-            }),
-            Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate5", &["a", "b"]),
-                body: BinaryAst::new(Subtract, Variable("a".to_string()), Variable("b".to_string()))
-            }),
-            Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate6", &["a", "b", "c", "d"]),
-                body: BinaryAst::new(
-                    Add,
-                    BinaryAst::new(
-                        Add,
-                        BinaryAst::new(
-                            Multiply,
-                            BinaryAst::new(Subtract, ExprAst::variable("a"),  ExprAst::variable("b")),
-                            BinaryAst::new(Add, ExprAst::variable("c"),  ExprAst::variable("d"))
-                        ),
-                        ExprAst::variable("a")
-                    ),
-                    ExprAst::variable("b")
-                )
-            }),
-            Function(FunctionAst {
-                prototype: PrototypeAst::of("calculate7", &["a", "b", "c", "d"]),
-                body: BinaryAst::new(
-                    Add,
-                    ExprAst::variable("a"),
-                    BinaryAst::new(
-                        Multiply,
-                        ExprAst::variable("b"),
-                        BinaryAst::new(
-                            Add,
-                            BinaryAst::new(Subtract, ExprAst::variable("c"), ExprAst::variable("d")),
-                            ExprAst::variable("a")
-                        )
-                    )
+                    BinaryAst::new(Geq, ExprAst::variable("a"), ExprAst::variable("c"))
                 )
             })
         ];

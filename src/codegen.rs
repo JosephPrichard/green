@@ -143,6 +143,7 @@ impl<'ast, W: Write> CodegenCtx<'ast, W> {
                 self.builder.uitofp(&ret2, &ret1);
                 ret2
             }
+            op => panic!("Operator has not been implemented yet {:?}", op)
         };
         Ok(reg)
     }
